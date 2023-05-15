@@ -26,7 +26,7 @@ jobs:
         NAME: Custom-Kernel-A32
       with:
         arch: arm64
-        compiler: clang/10/binutils
+        compiler: clang/11/binutils
         defconfig: a32_defconfig
         image: Image.gz
         
