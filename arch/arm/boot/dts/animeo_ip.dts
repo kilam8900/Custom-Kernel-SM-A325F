@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * animeo_ip.dts - Device Tree file for Somfy Animeo IP Boards
  *
  *  Copyright (C) 2011-2012 Jean-Christophe PLAGNIOL-VILLARD <plagnioj@jcrosoft.com>
+ *
+ * Licensed under GPLv2 only.
  */
 
 /dts-v1/;
@@ -23,10 +24,10 @@
 	};
 
 	chosen {
-		stdout-path = &usart2;
+		linux,stdout-path = &usart2;
 	};
 
-	memory@20000000 {
+	memory {
 		reg = <0x20000000 0x4000000>;
 	};
 
@@ -42,18 +43,6 @@
 
 	ahb {
 		apb {
-			tcb0: timer@fffa0000 {
-				timer@0 {
-					compatible = "atmel,tcb-timer";
-					reg = <0>, <1>;
-				};
-
-				timer@2 {
-					compatible = "atmel,tcb-timer";
-					reg = <2>;
-				};
-			};
-
 			usart0: serial@fffb0000 {
 				pinctrl-0 = <&pinctrl_usart0 &pinctrl_usart0_rts>;
 				linux,rs485-enabled-at-boot-time;
@@ -81,7 +70,6 @@
 				pinctrl-0 = <&pinctrl_mmc0_clk
 					     &pinctrl_mmc0_slot1_cmd_dat0
 					     &pinctrl_mmc0_slot1_dat1_3>;
-				pinctrl-names = "default";
 				status = "okay";
 
 				slot@1 {
@@ -168,24 +156,26 @@
 		};
 	};
 
-	gpio-keys {
+	gpio_keys {
 		compatible = "gpio-keys";
+		#address-cells = <1>;
+		#size-cells = <0>;
 
-		key-switch-in {
+		keyswitch_in {
 			label = "keyswitch_in";
 			gpios = <&pioB 1 GPIO_ACTIVE_HIGH>;
 			linux,code = <28>;
 			wakeup-source;
 		};
 
-		key-error-in {
+		error_in {
 			label = "error_in";
 			gpios = <&pioB 2 GPIO_ACTIVE_HIGH>;
 			linux,code = <29>;
 			wakeup-source;
 		};
 
-		key-s {
+		btn {
 			label = "btn";
 			gpios = <&pioC 23 GPIO_ACTIVE_HIGH>;
 			linux,code = <31>;

@@ -13,13 +13,14 @@
 #include <linux/dcache.h>
 #include <linux/magic.h>
 #include <linux/types.h>
-#include <linux/rcupdate.h>
 #include <linux/refcount.h>
 #include <linux/workqueue.h>
-#include <linux/delay.h>
-#include <linux/printk.h>
 #include "flask.h"
-#include "policycap.h"
+
+#ifdef CONFIG_KDP_CRED
+#include <linux/uh.h>
+#include <linux/kdp.h>
+#endif
 
 #define SECSID_NULL			0x00000000 /* unspecified SID */
 #define SECSID_WILD			0xffffffff /* wildcard SID */
@@ -44,12 +45,10 @@
 #define POLICYDB_VERSION_CONSTRAINT_NAMES	29
 #define POLICYDB_VERSION_XPERMS_IOCTL	30
 #define POLICYDB_VERSION_INFINIBAND		31
-#define POLICYDB_VERSION_GLBLUB		32
-#define POLICYDB_VERSION_COMP_FTRANS	33 /* compressed filename transitions */
 
 /* Range of policy versions we understand*/
 #define POLICYDB_VERSION_MIN   POLICYDB_VERSION_BASE
-#define POLICYDB_VERSION_MAX   POLICYDB_VERSION_COMP_FTRANS
+#define POLICYDB_VERSION_MAX   POLICYDB_VERSION_INFINIBAND
 
 /* Mask for just the mount related flags */
 #define SE_MNTMASK	0x0f
@@ -64,17 +63,30 @@
 #define SE_SBINITIALIZED	0x0100
 #define SE_SBPROC		0x0200
 #define SE_SBGENFS		0x0400
-#define SE_SBGENFS_XATTR	0x0800
 
-#define CONTEXT_STR	"context"
-#define FSCONTEXT_STR	"fscontext"
-#define ROOTCONTEXT_STR	"rootcontext"
-#define DEFCONTEXT_STR	"defcontext"
-#define SECLABEL_STR "seclabel"
+#define CONTEXT_STR	"context="
+#define FSCONTEXT_STR	"fscontext="
+#define ROOTCONTEXT_STR	"rootcontext="
+#define DEFCONTEXT_STR	"defcontext="
+#define LABELSUPP_STR "seclabel"
 
 struct netlbl_lsm_secattr;
 
-extern int selinux_enabled_boot;
+extern int selinux_enabled;
+
+/* Policy capabilities */
+enum {
+	POLICYDB_CAPABILITY_NETPEER,
+	POLICYDB_CAPABILITY_OPENPERM,
+	POLICYDB_CAPABILITY_EXTSOCKCLASS,
+	POLICYDB_CAPABILITY_ALWAYSNETWORK,
+	POLICYDB_CAPABILITY_CGROUPSECLABEL,
+	POLICYDB_CAPABILITY_NNP_NOSUID_TRANSITION,
+	__POLICYDB_CAPABILITY_MAX
+};
+#define POLICYDB_CAPABILITY_MAX (__POLICYDB_CAPABILITY_MAX - 1)
+
+extern const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX];
 
 /*
  * type_datum properties
@@ -87,52 +99,42 @@ extern int selinux_enabled_boot;
 #define POLICYDB_BOUNDS_MAXDEPTH	4
 
 struct selinux_avc;
-struct selinux_policy;
+struct selinux_ss;
 
 struct selinux_state {
-#ifdef CONFIG_SECURITY_SELINUX_DISABLE
 	bool disabled;
-#endif
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
 	bool enforcing;
 #endif
 	bool checkreqprot;
 	bool initialized;
-	bool policycap[__POLICYDB_CAP_MAX];
-
-	struct page *status_page;
-	struct mutex status_lock;
+	bool policycap[__POLICYDB_CAPABILITY_MAX];
+	bool android_netlink_route;
+	bool android_netlink_getneigh;
 
 	struct selinux_avc *avc;
-	struct selinux_policy __rcu *policy;
-	struct mutex policy_mutex;
-} __randomize_layout;
+	struct selinux_ss *ss;
+};
 
+void selinux_ss_init(struct selinux_ss **ss);
 void selinux_avc_init(struct selinux_avc **avc);
 
 extern struct selinux_state selinux_state;
 
-static inline bool selinux_initialized(const struct selinux_state *state)
-{
-	/* do a synchronized load to avoid race conditions */
-	return smp_load_acquire(&state->initialized);
-}
-
-static inline void selinux_mark_initialized(struct selinux_state *state)
-{
-	/* do a synchronized write to avoid race conditions */
-	smp_store_release(&state->initialized, true);
-}
-
 #ifdef CONFIG_SECURITY_SELINUX_DEVELOP
+extern int selinux_enforcing;							 
 static inline bool enforcing_enabled(struct selinux_state *state)
 {
-	return READ_ONCE(state->enforcing);
+	return selinux_enforcing; // SEC_SELINUX_PORTING_COMMON Change to use RKP 
 }
 
 static inline void enforcing_set(struct selinux_state *state, bool value)
 {
-	WRITE_ONCE(state->enforcing, value);
+#if (defined CONFIG_KDP_CRED && defined CONFIG_SAMSUNG_PRODUCT_SHIP)
+    uh_call(UH_APP_RKP, RKP_KDP_X60, (u64)&selinux_enforcing, (u64)value, 0, 0);
+#else
+    selinux_enforcing = value; // SEC_SELINUX_PORTING_COMMON Change to use RKP 
+#endif
 }
 #else
 static inline bool enforcing_enabled(struct selinux_state *state)
@@ -145,110 +147,69 @@ static inline void enforcing_set(struct selinux_state *state, bool value)
 }
 #endif
 
-static inline bool checkreqprot_get(const struct selinux_state *state)
-{
-	return READ_ONCE(state->checkreqprot);
-}
-
-static inline void checkreqprot_set(struct selinux_state *state, bool value)
-{
-	if (value)
-		pr_err("SELinux: https://github.com/SELinuxProject/selinux-kernel/wiki/DEPRECATE-checkreqprot\n");
-	WRITE_ONCE(state->checkreqprot, value);
-}
-
-#ifdef CONFIG_SECURITY_SELINUX_DISABLE
-static inline bool selinux_disabled(struct selinux_state *state)
-{
-	return READ_ONCE(state->disabled);
-}
-
-static inline void selinux_mark_disabled(struct selinux_state *state)
-{
-	WRITE_ONCE(state->disabled, true);
-}
-#else
-static inline bool selinux_disabled(struct selinux_state *state)
-{
-	return false;
-}
-#endif
-
 static inline bool selinux_policycap_netpeer(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_NETPEER]);
+	return state->policycap[POLICYDB_CAPABILITY_NETPEER];
 }
 
 static inline bool selinux_policycap_openperm(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_OPENPERM]);
+	return state->policycap[POLICYDB_CAPABILITY_OPENPERM];
 }
 
 static inline bool selinux_policycap_extsockclass(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_EXTSOCKCLASS]);
+	return state->policycap[POLICYDB_CAPABILITY_EXTSOCKCLASS];
 }
 
 static inline bool selinux_policycap_alwaysnetwork(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_ALWAYSNETWORK]);
+	return state->policycap[POLICYDB_CAPABILITY_ALWAYSNETWORK];
 }
 
 static inline bool selinux_policycap_cgroupseclabel(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_CGROUPSECLABEL]);
+	return state->policycap[POLICYDB_CAPABILITY_CGROUPSECLABEL];
 }
 
 static inline bool selinux_policycap_nnp_nosuid_transition(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_NNP_NOSUID_TRANSITION]);
+	return state->policycap[POLICYDB_CAPABILITY_NNP_NOSUID_TRANSITION];
 }
 
-static inline bool selinux_policycap_genfs_seclabel_symlinks(void)
+static inline bool selinux_android_nlroute_getlink(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_GENFS_SECLABEL_SYMLINKS]);
+	return state->android_netlink_route;
 }
 
-static inline bool selinux_policycap_ioctl_skip_cloexec(void)
+static inline bool selinux_android_nlroute_getneigh(void)
 {
 	struct selinux_state *state = &selinux_state;
 
-	return READ_ONCE(state->policycap[POLICYDB_CAP_IOCTL_SKIP_CLOEXEC]);
+	return state->android_netlink_getneigh;
 }
-
-struct selinux_policy_convert_data;
-
-struct selinux_load_state {
-	struct selinux_policy *policy;
-	struct selinux_policy_convert_data *convert_data;
-};
 
 int security_mls_enabled(struct selinux_state *state);
 int security_load_policy(struct selinux_state *state,
-			 void *data, size_t len,
-			 struct selinux_load_state *load_state);
-void selinux_policy_commit(struct selinux_state *state,
-			   struct selinux_load_state *load_state);
-void selinux_policy_cancel(struct selinux_state *state,
-			   struct selinux_load_state *load_state);
+			 void *data, size_t len);
 int security_read_policy(struct selinux_state *state,
 			 void **data, size_t *len);
-int security_read_state_kernel(struct selinux_state *state,
-			       void **data, size_t *len);
+size_t security_policydb_len(struct selinux_state *state);
+
 int security_policycap_supported(struct selinux_state *state,
 				 unsigned int req_cap);
 
@@ -265,8 +226,8 @@ struct av_decision {
 #define XPERMS_AUDITALLOW 2
 #define XPERMS_DONTAUDIT 4
 
-#define security_xperm_set(perms, x) ((perms)[(x) >> 5] |= 1 << ((x) & 0x1f))
-#define security_xperm_test(perms, x) (1 & ((perms)[(x) >> 5] >> ((x) & 0x1f)))
+#define security_xperm_set(perms, x) (perms[x >> 5] |= 1 << (x & 0x1f))
+#define security_xperm_test(perms, x) (1 & (perms[x >> 5] >> (x & 0x1f)))
 struct extended_perms_data {
 	u32 p[8];
 };
@@ -285,7 +246,13 @@ struct extended_perms {
 };
 
 /* definitions of av_decision.flags */
+// [ SEC_SELINUX_PORTING_COMMON
+#ifdef CONFIG_ALWAYS_ENFORCE
+#define AVD_FLAGS_PERMISSIVE	0x0000
+#else
 #define AVD_FLAGS_PERMISSIVE	0x0001
+#endif
+// ] SEC_SELINUX_PORTING_COMMON					   
 
 void security_compute_av(struct selinux_state *state,
 			 u32 ssid, u32 tsid,
@@ -319,9 +286,6 @@ int security_sid_to_context(struct selinux_state *state, u32 sid,
 			    char **scontext, u32 *scontext_len);
 
 int security_sid_to_context_force(struct selinux_state *state,
-				  u32 sid, char **scontext, u32 *scontext_len);
-
-int security_sid_to_context_inval(struct selinux_state *state,
 				  u32 sid, char **scontext, u32 *scontext_len);
 
 int security_context_to_sid(struct selinux_state *state,
@@ -378,9 +342,9 @@ int security_net_peersid_resolve(struct selinux_state *state,
 				 u32 xfrm_sid,
 				 u32 *peer_sid);
 
-int security_get_classes(struct selinux_policy *policy,
+int security_get_classes(struct selinux_state *state,
 			 char ***classes, int *nclasses);
-int security_get_permissions(struct selinux_policy *policy,
+int security_get_permissions(struct selinux_state *state,
 			     char *class, char ***perms, int *nperms);
 int security_get_reject_unknown(struct selinux_state *state);
 int security_get_allow_unknown(struct selinux_state *state);
@@ -397,11 +361,7 @@ int security_get_allow_unknown(struct selinux_state *state);
 int security_fs_use(struct selinux_state *state, struct super_block *sb);
 
 int security_genfs_sid(struct selinux_state *state,
-		       const char *fstype, const char *path, u16 sclass,
-		       u32 *sid);
-
-int selinux_policy_genfs_sid(struct selinux_policy *policy,
-		       const char *fstype, const char *path, u16 sclass,
+		       const char *fstype, char *name, u16 sclass,
 		       u32 *sid);
 
 #ifdef CONFIG_NETLABEL
@@ -437,7 +397,7 @@ extern struct page *selinux_kernel_status_page(struct selinux_state *state);
 
 #define SELINUX_KERNEL_STATUS_VERSION	1
 struct selinux_kernel_status {
-	u32	version;	/* version number of the structure */
+	u32	version;	/* version number of thie structure */
 	u32	sequence;	/* sequence number of seqlock logic */
 	u32	enforcing;	/* current setting of enforcing mode */
 	u32	policyload;	/* times of policy reloaded */
@@ -455,6 +415,7 @@ extern void selinux_complete_init(void);
 extern int selinux_disable(struct selinux_state *state);
 extern void exit_sel_fs(void);
 extern struct path selinux_null;
+extern struct vfsmount *selinuxfs_mount;
 extern void selnl_notify_setenforce(int val);
 extern void selnl_notify_policyload(u32 seqno);
 extern int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm);
@@ -462,6 +423,7 @@ extern int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm);
 extern void avtab_cache_init(void);
 extern void ebitmap_cache_init(void);
 extern void hashtab_cache_init(void);
+extern void selinux_nlmsg_init(void);
 extern int security_sidtab_hash_stats(struct selinux_state *state, char *page);
 
 #endif /* _SELINUX_SECURITY_H_ */

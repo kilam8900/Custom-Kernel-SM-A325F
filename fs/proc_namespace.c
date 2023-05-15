@@ -18,42 +18,42 @@
 #include "pnode.h"
 #include "internal.h"
 
-static __poll_t mounts_poll(struct file *file, poll_table *wait)
+static unsigned mounts_poll(struct file *file, poll_table *wait)
 {
 	struct seq_file *m = file->private_data;
 	struct proc_mounts *p = m->private;
 	struct mnt_namespace *ns = p->ns;
-	__poll_t res = EPOLLIN | EPOLLRDNORM;
+	unsigned res = POLLIN | POLLRDNORM;
 	int event;
 
 	poll_wait(file, &p->ns->poll, wait);
 
-	event = READ_ONCE(ns->event);
+	event = ACCESS_ONCE(ns->event);
 	if (m->poll_event != event) {
 		m->poll_event = event;
-		res |= EPOLLERR | EPOLLPRI;
+		res |= POLLERR | POLLPRI;
 	}
 
 	return res;
 }
 
-struct proc_fs_opts {
+struct proc_fs_info {
 	int flag;
 	const char *str;
 };
 
 static int show_sb_opts(struct seq_file *m, struct super_block *sb)
 {
-	static const struct proc_fs_opts fs_opts[] = {
-		{ SB_SYNCHRONOUS, ",sync" },
-		{ SB_DIRSYNC, ",dirsync" },
-		{ SB_MANDLOCK, ",mand" },
-		{ SB_LAZYTIME, ",lazytime" },
+	static const struct proc_fs_info fs_info[] = {
+		{ MS_SYNCHRONOUS, ",sync" },
+		{ MS_DIRSYNC, ",dirsync" },
+		{ MS_MANDLOCK, ",mand" },
+		{ MS_LAZYTIME, ",lazytime" },
 		{ 0, NULL }
 	};
-	const struct proc_fs_opts *fs_infop;
+	const struct proc_fs_info *fs_infop;
 
-	for (fs_infop = fs_opts; fs_infop->flag; fs_infop++) {
+	for (fs_infop = fs_info; fs_infop->flag; fs_infop++) {
 		if (sb->s_flags & fs_infop->flag)
 			seq_puts(m, fs_infop->str);
 	}
@@ -63,36 +63,32 @@ static int show_sb_opts(struct seq_file *m, struct super_block *sb)
 
 static void show_mnt_opts(struct seq_file *m, struct vfsmount *mnt)
 {
-	static const struct proc_fs_opts mnt_opts[] = {
+	static const struct proc_fs_info mnt_info[] = {
 		{ MNT_NOSUID, ",nosuid" },
 		{ MNT_NODEV, ",nodev" },
 		{ MNT_NOEXEC, ",noexec" },
 		{ MNT_NOATIME, ",noatime" },
 		{ MNT_NODIRATIME, ",nodiratime" },
 		{ MNT_RELATIME, ",relatime" },
-		{ MNT_NOSYMFOLLOW, ",nosymfollow" },
 		{ 0, NULL }
 	};
-	const struct proc_fs_opts *fs_infop;
+	const struct proc_fs_info *fs_infop;
 
-	for (fs_infop = mnt_opts; fs_infop->flag; fs_infop++) {
+	for (fs_infop = mnt_info; fs_infop->flag; fs_infop++) {
 		if (mnt->mnt_flags & fs_infop->flag)
 			seq_puts(m, fs_infop->str);
 	}
-
-	if (is_idmapped_mnt(mnt))
-		seq_puts(m, ",idmapped");
 }
 
 static inline void mangle(struct seq_file *m, const char *s)
 {
-	seq_escape(m, s, " \t\n\\#");
+	seq_escape(m, s, " \t\n\\");
 }
 
 static void show_type(struct seq_file *m, struct super_block *sb)
 {
 	mangle(m, sb->s_type->name);
-	if (sb->s_subtype) {
+	if (sb->s_subtype && sb->s_subtype[0]) {
 		seq_putc(m, '.');
 		mangle(m, sb->s_subtype);
 	}
@@ -125,7 +121,9 @@ static int show_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
 	if (err)
 		goto out;
 	show_mnt_opts(m, mnt);
-	if (sb->s_op->show_options)
+	if (sb->s_op->show_options2)
+			err = sb->s_op->show_options2(mnt, m, mnt_path.dentry);
+	else if (sb->s_op->show_options)
 		err = sb->s_op->show_options(m, mnt_path.dentry);
 	seq_puts(m, " 0 0\n");
 out:
@@ -187,7 +185,9 @@ static int show_mountinfo(struct seq_file *m, struct vfsmount *mnt)
 	err = show_sb_opts(m, sb);
 	if (err)
 		goto out;
-	if (sb->s_op->show_options)
+	if (sb->s_op->show_options2) {
+		err = sb->s_op->show_options2(mnt, m, mnt->mnt_root);
+	} else if (sb->s_op->show_options)
 		err = sb->s_op->show_options(m, mnt->mnt_root);
 	seq_putc(m, '\n');
 out:
@@ -283,8 +283,7 @@ static int mounts_open_common(struct inode *inode, struct file *file,
 	p->ns = ns;
 	p->root = root;
 	p->show = show;
-	INIT_LIST_HEAD(&p->cursor.mnt_list);
-	p->cursor.mnt.mnt_flags = MNT_CURSOR;
+	p->cached_event = ~0ULL;
 
 	return 0;
 
@@ -301,7 +300,6 @@ static int mounts_release(struct inode *inode, struct file *file)
 	struct seq_file *m = file->private_data;
 	struct proc_mounts *p = m->private;
 	path_put(&p->root);
-	mnt_cursor_del(p->ns, &p->cursor);
 	put_mnt_ns(p->ns);
 	return seq_release_private(inode, file);
 }
@@ -323,8 +321,7 @@ static int mountstats_open(struct inode *inode, struct file *file)
 
 const struct file_operations proc_mounts_operations = {
 	.open		= mounts_open,
-	.read_iter	= seq_read_iter,
-	.splice_read	= generic_file_splice_read,
+	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= mounts_release,
 	.poll		= mounts_poll,
@@ -332,8 +329,7 @@ const struct file_operations proc_mounts_operations = {
 
 const struct file_operations proc_mountinfo_operations = {
 	.open		= mountinfo_open,
-	.read_iter	= seq_read_iter,
-	.splice_read	= generic_file_splice_read,
+	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= mounts_release,
 	.poll		= mounts_poll,
@@ -341,8 +337,7 @@ const struct file_operations proc_mountinfo_operations = {
 
 const struct file_operations proc_mountstats_operations = {
 	.open		= mountstats_open,
-	.read_iter	= seq_read_iter,
-	.splice_read	= generic_file_splice_read,
+	.read		= seq_read,
 	.llseek		= seq_lseek,
 	.release	= mounts_release,
 };

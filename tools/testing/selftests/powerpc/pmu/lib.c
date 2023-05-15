@@ -1,6 +1,6 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2014, Michael Ellerman, IBM Corp.
+ * Licensed under GPLv2.
  */
 
 #define _GNU_SOURCE	/* For CPU_ZERO etc. */
@@ -190,14 +190,38 @@ int parse_proc_maps(void)
 
 bool require_paranoia_below(int level)
 {
-	int err;
 	long current;
+	char *end, buf[16];
+	FILE *f;
+	bool rc;
 
-	err = read_long(PARANOID_PATH, &current, 10);
-	if (err) {
-		printf("Couldn't parse " PARANOID_PATH "?\n");
-		return false;
+	rc = false;
+
+	f = fopen(PARANOID_PATH, "r");
+	if (!f) {
+		perror("fopen");
+		goto out;
 	}
 
-	return current < level;
+	if (!fgets(buf, sizeof(buf), f)) {
+		printf("Couldn't read " PARANOID_PATH "?\n");
+		goto out_close;
+	}
+
+	current = strtol(buf, &end, 10);
+
+	if (end == buf) {
+		printf("Couldn't parse " PARANOID_PATH "?\n");
+		goto out_close;
+	}
+
+	if (current >= level)
+		goto out_close;
+
+	rc = true;
+out_close:
+	fclose(f);
+out:
+	return rc;
 }
+

@@ -10,15 +10,15 @@
  * Send feedback to <support@numascale.com>
  *
  */
-#include <linux/types.h>
+
 #include <linux/init.h>
-#include <linux/pgtable.h>
 
 #include <asm/numachip/numachip.h>
 #include <asm/numachip/numachip_csr.h>
-
-
-#include "local.h"
+#include <asm/ipi.h>
+#include <asm/apic_flat_64.h>
+#include <asm/pgtable.h>
+#include <asm/pci_x86.h>
 
 u8 numachip_system __read_mostly;
 static const struct apic apic_numachip1;
@@ -38,7 +38,7 @@ static unsigned int numachip1_get_apic_id(unsigned long x)
 	return id;
 }
 
-static u32 numachip1_set_apic_id(unsigned int id)
+static unsigned long numachip1_set_apic_id(unsigned int id)
 {
 	return (id & 0xff) << 24;
 }
@@ -51,12 +51,12 @@ static unsigned int numachip2_get_apic_id(unsigned long x)
 	return ((mcfg >> (28 - 8)) & 0xfff00) | (x >> 24);
 }
 
-static u32 numachip2_set_apic_id(unsigned int id)
+static unsigned long numachip2_set_apic_id(unsigned int id)
 {
 	return id << 24;
 }
 
-static int numachip_apic_id_valid(u32 apicid)
+static int numachip_apic_id_valid(int apicid)
 {
 	/* Trust what bootloader passes in MADT */
 	return 1;
@@ -175,7 +175,7 @@ static void fixup_cpu_id(struct cpuinfo_x86 *c, int node)
 	this_cpu_write(cpu_llc_id, node);
 
 	/* Account for nodes per socket in multi-core-module processors */
-	if (boot_cpu_has(X86_FEATURE_NODEID_MSR)) {
+	if (static_cpu_has(X86_FEATURE_NODEID_MSR)) {
 		rdmsrl(MSR_FAM10H_NODE_ID, val);
 		nodes = ((val >> 3) & 7) + 1;
 	}
@@ -246,13 +246,17 @@ static const struct apic apic_numachip1 __refconst = {
 	.apic_id_valid			= numachip_apic_id_valid,
 	.apic_id_registered		= numachip_apic_id_registered,
 
-	.delivery_mode			= APIC_DELIVERY_MODE_FIXED,
-	.dest_mode_logical		= false,
+	.irq_delivery_mode		= dest_Fixed,
+	.irq_dest_mode			= 0, /* physical */
 
+	.target_cpus			= online_target_cpus,
 	.disable_esr			= 0,
-
+	.dest_logical			= 0,
 	.check_apicid_used		= NULL,
+
+	.vector_allocation_domain	= default_vector_allocation_domain,
 	.init_apic_ldr			= flat_init_apic_ldr,
+
 	.ioapic_phys_id_map		= NULL,
 	.setup_apic_routing		= NULL,
 	.cpu_present_to_apicid		= default_cpu_present_to_apicid,
@@ -263,7 +267,7 @@ static const struct apic apic_numachip1 __refconst = {
 	.get_apic_id			= numachip1_get_apic_id,
 	.set_apic_id			= numachip1_set_apic_id,
 
-	.calc_dest_apicid		= apic_default_calc_apicid,
+	.cpu_mask_to_apicid		= default_cpu_mask_to_apicid,
 
 	.send_IPI			= numachip_send_IPI_one,
 	.send_IPI_mask			= numachip_send_IPI_mask,
@@ -293,13 +297,17 @@ static const struct apic apic_numachip2 __refconst = {
 	.apic_id_valid			= numachip_apic_id_valid,
 	.apic_id_registered		= numachip_apic_id_registered,
 
-	.delivery_mode			= APIC_DELIVERY_MODE_FIXED,
-	.dest_mode_logical		= false,
+	.irq_delivery_mode		= dest_Fixed,
+	.irq_dest_mode			= 0, /* physical */
 
+	.target_cpus			= online_target_cpus,
 	.disable_esr			= 0,
-
+	.dest_logical			= 0,
 	.check_apicid_used		= NULL,
+
+	.vector_allocation_domain	= default_vector_allocation_domain,
 	.init_apic_ldr			= flat_init_apic_ldr,
+
 	.ioapic_phys_id_map		= NULL,
 	.setup_apic_routing		= NULL,
 	.cpu_present_to_apicid		= default_cpu_present_to_apicid,
@@ -310,7 +318,7 @@ static const struct apic apic_numachip2 __refconst = {
 	.get_apic_id			= numachip2_get_apic_id,
 	.set_apic_id			= numachip2_set_apic_id,
 
-	.calc_dest_apicid		= apic_default_calc_apicid,
+	.cpu_mask_to_apicid		= default_cpu_mask_to_apicid,
 
 	.send_IPI			= numachip_send_IPI_one,
 	.send_IPI_mask			= numachip_send_IPI_mask,

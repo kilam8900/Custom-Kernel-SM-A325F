@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  LZO1X Compressor from LZO
  *
@@ -50,7 +49,9 @@ next:
 
 		if (dv == 0 && bitstream_version) {
 			const unsigned char *ir = ip + 4;
-			const unsigned char *limit = min(ip_end, ip + MAX_ZERO_RUN_LENGTH + 1);
+			const unsigned char *limit = ip_end
+				< (ip + MAX_ZERO_RUN_LENGTH + 1)
+				? ip_end : ip + MAX_ZERO_RUN_LENGTH + 1;
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && \
 	defined(LZO_FAST_64BIT_MEMORY_ACCESS)
 			u64 dv64;
@@ -81,19 +82,17 @@ next:
 					ALIGN((uintptr_t)ir, 4)) &&
 					(ir < limit) && (*ir == 0))
 				ir++;
-			if (IS_ALIGNED((uintptr_t)ir, 4)) {
-				for (; (ir + 4) <= limit; ir += 4) {
-					dv = *((u32 *)ir);
-					if (dv) {
+			for (; (ir + 4) <= limit; ir += 4) {
+				dv = *((u32 *)ir);
+				if (dv) {
 #  if defined(__LITTLE_ENDIAN)
-						ir += __builtin_ctz(dv) >> 3;
+					ir += __builtin_ctz(dv) >> 3;
 #  elif defined(__BIG_ENDIAN)
-						ir += __builtin_clz(dv) >> 3;
+					ir += __builtin_clz(dv) >> 3;
 #  else
 #    error "missing endian definition"
 #  endif
-						break;
-					}
+					break;
 				}
 			}
 #endif
@@ -266,19 +265,6 @@ m_len_done:
 				*op++ = (M4_MARKER | ((m_off >> 11) & 8)
 						| (m_len - 2));
 			else {
-				if (unlikely(((m_off & 0x403f) == 0x403f)
-						&& (m_len >= 261)
-						&& (m_len <= 264))
-						&& likely(bitstream_version)) {
-					// Under lzo-rle, block copies
-					// for 261 <= length <= 264 and
-					// (distance & 0x80f3) == 0x80f3
-					// can result in ambiguous
-					// output. Adjust length
-					// to 260 to prevent ambiguity.
-					ip -= m_len - 260;
-					m_len = 260;
-				}
 				m_len -= M4_MAX_LEN;
 				*op++ = (M4_MARKER | ((m_off >> 11) & 8));
 				while (unlikely(m_len > 255)) {
@@ -299,20 +285,19 @@ finished_writing_instruction:
 	return in_end - (ii - ti);
 }
 
-static int lzogeneric1x_1_compress(const unsigned char *in, size_t in_len,
+int lzogeneric1x_1_compress(const unsigned char *in, size_t in_len,
 		     unsigned char *out, size_t *out_len,
 		     void *wrkmem, const unsigned char bitstream_version)
 {
 	const unsigned char *ip = in;
 	unsigned char *op = out;
-	unsigned char *data_start;
 	size_t l = in_len;
 	size_t t = 0;
 	signed char state_offset = -2;
 	unsigned int m4_max_offset;
 
-	// LZO v0 will never write 17 as first byte (except for zero-length
-	// input), so this is used to version the bitstream
+	// LZO v0 will never write 17 as first byte,
+	// so this is used to version the bitstream
 	if (bitstream_version > 0) {
 		*op++ = 17;
 		*op++ = bitstream_version;
@@ -321,10 +306,8 @@ static int lzogeneric1x_1_compress(const unsigned char *in, size_t in_len,
 		m4_max_offset = M4_MAX_OFFSET_V0;
 	}
 
-	data_start = op;
-
 	while (l > 20) {
-		size_t ll = min_t(size_t, l, m4_max_offset + 1);
+		size_t ll = l <= (m4_max_offset + 1) ? l : (m4_max_offset + 1);
 		uintptr_t ll_end = (uintptr_t) ip + ll;
 		if ((ll_end + ((t + ll) >> 5)) <= ll_end)
 			break;
@@ -341,7 +324,7 @@ static int lzogeneric1x_1_compress(const unsigned char *in, size_t in_len,
 	if (t > 0) {
 		const unsigned char *ii = in + in_len - t;
 
-		if (op == data_start && t <= 238) {
+		if (op == out && t <= 238) {
 			*op++ = (17 + t);
 		} else if (t <= 3) {
 			op[state_offset] |= t;

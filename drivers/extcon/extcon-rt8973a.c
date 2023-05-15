@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * extcon-rt8973a.c - Richtek RT8973A extcon driver to support USB switches
  *
  * Copyright (c) 2014 Samsung Electronics Co., Ltd
  * Author: Chanwoo Choi <cw00.choi@samsung.com>
+ *
+ * This program is free software; you can redistribute  it and/or modify it
+ * under  the terms of  the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
  */
 
 #include <linux/err.h>
@@ -16,7 +20,7 @@
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
-#include <linux/extcon-provider.h>
+#include <linux/extcon.h>
 
 #include "extcon-rt8973a.h"
 
@@ -192,6 +196,7 @@ static const struct regmap_irq_chip rt8973a_muic_irq_chip = {
 	.name			= "rt8973a",
 	.status_base		= RT8973A_REG_INT1,
 	.mask_base		= RT8973A_REG_INTM1,
+	.mask_invert		= false,
 	.num_regs		= 2,
 	.irqs			= rt8973a_irqs,
 	.num_irqs		= ARRAY_SIZE(rt8973a_irqs),
@@ -548,7 +553,8 @@ static void rt8973a_init_dev_type(struct rt8973a_muic_info *info)
 	}
 }
 
-static int rt8973a_muic_i2c_probe(struct i2c_client *i2c)
+static int rt8973a_muic_i2c_probe(struct i2c_client *i2c,
+				 const struct i2c_device_id *id)
 {
 	struct device_node *np = i2c->dev.of_node;
 	struct rt8973a_muic_info *info;
@@ -645,11 +651,13 @@ static int rt8973a_muic_i2c_probe(struct i2c_client *i2c)
 	return 0;
 }
 
-static void rt8973a_muic_i2c_remove(struct i2c_client *i2c)
+static int rt8973a_muic_i2c_remove(struct i2c_client *i2c)
 {
 	struct rt8973a_muic_info *info = i2c_get_clientdata(i2c);
 
 	regmap_del_irq_chip(info->irq, info->irq_data);
+
+	return 0;
 }
 
 static const struct of_device_id rt8973a_dt_match[] = {
@@ -695,7 +703,7 @@ static struct i2c_driver rt8973a_muic_i2c_driver = {
 		.pm	= &rt8973a_muic_pm_ops,
 		.of_match_table = rt8973a_dt_match,
 	},
-	.probe_new = rt8973a_muic_i2c_probe,
+	.probe	= rt8973a_muic_i2c_probe,
 	.remove	= rt8973a_muic_i2c_remove,
 	.id_table = rt8973a_i2c_id,
 };

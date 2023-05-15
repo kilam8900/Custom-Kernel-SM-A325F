@@ -1,12 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kernel/ksysfs.c - sysfs attributes in /sys/kernel, which
  * 		     are not related to any other subsystem
  *
  * Copyright (C) 2004 Kay Sievers <kay.sievers@vrfy.org>
+ * 
+ * This file is release under the GPLv2
+ *
  */
 
-#include <asm/byteorder.h>
 #include <linux/kobject.h>
 #include <linux/string.h>
 #include <linux/sysfs.h>
@@ -21,19 +22,12 @@
 
 #include <linux/rcupdate.h>	/* rcu_expedited and rcu_normal */
 
-#if defined(__LITTLE_ENDIAN)
-#define CPU_BYTEORDER_STRING	"little"
-#elif defined(__BIG_ENDIAN)
-#define CPU_BYTEORDER_STRING	"big"
-#else
-#error Unknown byteorder
-#endif
-
 #define KERNEL_ATTR_RO(_name) \
 static struct kobj_attribute _name##_attr = __ATTR_RO(_name)
 
 #define KERNEL_ATTR_RW(_name) \
-static struct kobj_attribute _name##_attr = __ATTR_RW(_name)
+static struct kobj_attribute _name##_attr = \
+	__ATTR(_name, 0644, _name##_show, _name##_store)
 
 /* current uevent sequence number */
 static ssize_t uevent_seqnum_show(struct kobject *kobj,
@@ -42,22 +36,6 @@ static ssize_t uevent_seqnum_show(struct kobject *kobj,
 	return sprintf(buf, "%llu\n", (unsigned long long)uevent_seqnum);
 }
 KERNEL_ATTR_RO(uevent_seqnum);
-
-/* cpu byteorder */
-static ssize_t cpu_byteorder_show(struct kobject *kobj,
-				  struct kobj_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%s\n", CPU_BYTEORDER_STRING);
-}
-KERNEL_ATTR_RO(cpu_byteorder);
-
-/* address bits */
-static ssize_t address_bits_show(struct kobject *kobj,
-				 struct kobj_attribute *attr, char *buf)
-{
-	return sysfs_emit(buf, "%zu\n", sizeof(void *) * 8 /* CHAR_BIT */);
-}
-KERNEL_ATTR_RO(address_bits);
 
 #ifdef CONFIG_UEVENT_HELPER
 /* uevent helper program, used during early boot */
@@ -130,12 +108,7 @@ KERNEL_ATTR_RO(kexec_crash_loaded);
 static ssize_t kexec_crash_size_show(struct kobject *kobj,
 				       struct kobj_attribute *attr, char *buf)
 {
-	ssize_t size = crash_get_memory_size();
-
-	if (size < 0)
-		return size;
-
-	return sprintf(buf, "%zd\n", size);
+	return sprintf(buf, "%zu\n", crash_get_memory_size());
 }
 static ssize_t kexec_crash_size_store(struct kobject *kobj,
 				   struct kobj_attribute *attr,
@@ -240,8 +213,6 @@ EXPORT_SYMBOL_GPL(kernel_kobj);
 static struct attribute * kernel_attrs[] = {
 	&fscaps_attr.attr,
 	&uevent_seqnum_attr.attr,
-	&cpu_byteorder_attr.attr,
-	&address_bits_attr.attr,
 #ifdef CONFIG_UEVENT_HELPER
 	&uevent_helper_attr.attr,
 #endif

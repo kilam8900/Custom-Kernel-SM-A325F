@@ -7,8 +7,7 @@
 
 #define COMMON_FILE_PERMS COMMON_FILE_SOCK_PERMS, "unlink", "link", \
     "rename", "execute", "quotaon", "mounton", "audit_access", \
-	"open", "execmod", "watch", "watch_mount", "watch_sb", \
-	"watch_with_perm", "watch_reads"
+    "open", "execmod"
 
 #define COMMON_SOCK_PERMS COMMON_FILE_SOCK_PERMS, "bind", "connect", \
     "listen", "accept", "getopt", "setopt", "shutdown", "recvfrom",  \
@@ -27,10 +26,9 @@
 	    "audit_control", "setfcap"
 
 #define COMMON_CAP2_PERMS  "mac_override", "mac_admin", "syslog", \
-		"wake_alarm", "block_suspend", "audit_read", "perfmon", "bpf", \
-		"checkpoint_restore"
+		"wake_alarm", "block_suspend", "audit_read"
 
-#if CAP_LAST_CAP > CAP_CHECKPOINT_RESTORE
+#if CAP_LAST_CAP > CAP_AUDIT_READ
 #error New capability defined, please update COMMON_CAP2_PERMS.
 #endif
 
@@ -38,7 +36,7 @@
  * Note: The name for any socket class should be suffixed by "socket",
  *	 and doesn't contain more than one substr of "socket".
  */
-const struct security_class_mapping secclass_map[] = {
+struct security_class_mapping secclass_map[] = {
 	{ "security",
 	  { "compute_av", "compute_create", "compute_member",
 	    "check_context", "load_policy", "compute_relabel",
@@ -62,7 +60,7 @@ const struct security_class_mapping secclass_map[] = {
 	{ "filesystem",
 	  { "mount", "remount", "unmount", "getattr",
 	    "relabelfrom", "relabelto", "associate", "quotamod",
-	    "quotaget", "watch", NULL } },
+	    "quotaget", NULL } },
 	{ "file",
 	  { COMMON_FILE_PERMS,
 	    "execute_no_trans", "entrypoint", NULL } },
@@ -117,7 +115,8 @@ const struct security_class_mapping secclass_map[] = {
 	  { COMMON_IPC_PERMS, NULL } },
 	{ "netlink_route_socket",
 	  { COMMON_SOCK_PERMS,
-	    "nlmsg_read", "nlmsg_write", NULL } },
+	    "nlmsg_read", "nlmsg_write", "nlmsg_readpriv", "nlmsg_getneigh",
+	    NULL } },
 	{ "netlink_tcpdiag_socket",
 	  { COMMON_SOCK_PERMS,
 	    "nlmsg_read", "nlmsg_write", NULL } },
@@ -179,7 +178,7 @@ const struct security_class_mapping secclass_map[] = {
 	  { COMMON_CAP2_PERMS, NULL } },
 	{ "sctp_socket",
 	  { COMMON_SOCK_PERMS,
-	    "node_bind", "name_connect", "association", NULL } },
+	    "node_bind", NULL } },
 	{ "icmp_socket",
 	  { COMMON_SOCK_PERMS,
 	    "node_bind", NULL } },
@@ -242,23 +241,12 @@ const struct security_class_mapping secclass_map[] = {
 	{ "infiniband_endport",
 	  { "manage_subnet", NULL } },
 	{ "bpf",
-	  { "map_create", "map_read", "map_write", "prog_load", "prog_run",
-	    NULL } },
-	{ "xdp_socket",
-	  { COMMON_SOCK_PERMS, NULL } },
-	{ "mctp_socket",
-	  { COMMON_SOCK_PERMS, NULL } },
+	  {"map_create", "map_read", "map_write", "prog_load", "prog_run"} },
 	{ "perf_event",
-	  { "open", "cpu", "kernel", "tracepoint", "read", "write", NULL } },
-	{ "anon_inode",
-	  { COMMON_FILE_PERMS, NULL } },
-	{ "io_uring",
-	  { "override_creds", "sqpoll", "cmd", NULL } },
-	{ "user_namespace",
-	  { "create", NULL } },
+	  {"open", "cpu", "kernel", "tracepoint", "read", "write"} },
 	{ NULL }
   };
 
-#if PF_MAX > 46
+#if PF_MAX > 44
 #error New address family defined, please update secclass_map.
 #endif

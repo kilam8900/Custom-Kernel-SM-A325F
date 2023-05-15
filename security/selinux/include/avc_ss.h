@@ -7,7 +7,7 @@
 #ifndef _SELINUX_AVC_SS_H_
 #define _SELINUX_AVC_SS_H_
 
-#include <linux/types.h>
+#include "flask.h"
 
 struct selinux_avc;
 int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
@@ -18,7 +18,9 @@ struct security_class_mapping {
 	const char *perms[sizeof(u32) * 8 + 1];
 };
 
-extern const struct security_class_mapping secclass_map[];
+extern struct security_class_mapping secclass_map[];
+
+extern int ss_initialized; // SEC_SELINUX_PORTING_COMMON
 
 #endif /* _SELINUX_AVC_SS_H_ */
 

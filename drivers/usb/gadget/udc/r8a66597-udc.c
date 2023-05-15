@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * R8A66597 UDC (USB gadget)
  *
  * Copyright (C) 2006-2009 Renesas Solutions Corp.
  *
  * Author : Yoshihiro Shimoda <yoshihiro.shimoda.uh@renesas.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
  */
 
 #include <linux/module.h>
@@ -1250,7 +1253,7 @@ static void set_feature(struct r8a66597 *r8a66597, struct usb_ctrlrequest *ctrl)
 			do {
 				tmp = r8a66597_read(r8a66597, INTSTS0) & CTSQ;
 				udelay(1);
-			} while (tmp != CS_IDST && timeout-- > 0);
+			} while (tmp != CS_IDST || timeout-- > 0);
 
 			if (tmp == CS_IDST)
 				r8a66597_bset(r8a66597,
@@ -1514,9 +1517,9 @@ static irqreturn_t r8a66597_irq(int irq, void *_r8a66597)
 	return IRQ_HANDLED;
 }
 
-static void r8a66597_timer(struct timer_list *t)
+static void r8a66597_timer(unsigned long _r8a66597)
 {
-	struct r8a66597 *r8a66597 = from_timer(r8a66597, t, timer);
+	struct r8a66597 *r8a66597 = (struct r8a66597 *)_r8a66597;
 	unsigned long flags;
 	u16 tmp;
 
@@ -1827,8 +1830,10 @@ static void nop_completion(struct usb_ep *ep, struct usb_request *r)
 static int r8a66597_sudmac_ioremap(struct r8a66597 *r8a66597,
 					  struct platform_device *pdev)
 {
-	r8a66597->sudmac_reg =
-		devm_platform_ioremap_resource_byname(pdev, "sudmac");
+	struct resource *res;
+
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "sudmac");
+	r8a66597->sudmac_reg = devm_ioremap_resource(&pdev->dev, res);
 	return PTR_ERR_OR_ZERO(r8a66597->sudmac_reg);
 }
 
@@ -1836,7 +1841,7 @@ static int r8a66597_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	char clk_name[8];
-	struct resource *ires;
+	struct resource *res, *ires;
 	int irq;
 	void __iomem *reg = NULL;
 	struct r8a66597 *r8a66597 = NULL;
@@ -1844,13 +1849,12 @@ static int r8a66597_probe(struct platform_device *pdev)
 	int i;
 	unsigned long irq_trigger;
 
-	reg = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	reg = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(reg))
 		return PTR_ERR(reg);
 
 	ires = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!ires)
-		return -EINVAL;
 	irq = ires->start;
 	irq_trigger = ires->flags & IRQF_TRIGGER_MASK;
 
@@ -1873,7 +1877,9 @@ static int r8a66597_probe(struct platform_device *pdev)
 	r8a66597->gadget.max_speed = USB_SPEED_HIGH;
 	r8a66597->gadget.name = udc_name;
 
-	timer_setup(&r8a66597->timer, r8a66597_timer, 0);
+	init_timer(&r8a66597->timer);
+	r8a66597->timer.function = r8a66597_timer;
+	r8a66597->timer.data = (unsigned long)r8a66597;
 	r8a66597->reg = reg;
 
 	if (r8a66597->pdata->on_chip) {
@@ -1968,7 +1974,7 @@ clean_up2:
 static struct platform_driver r8a66597_driver = {
 	.remove =	r8a66597_remove,
 	.driver		= {
-		.name =	udc_name,
+		.name =	(char *) udc_name,
 	},
 };
 

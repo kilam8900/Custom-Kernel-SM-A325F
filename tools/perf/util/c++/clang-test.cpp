@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "clang.h"
 #include "clang-c.h"
-extern "C" {
-#include "../util.h"
-}
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
 
+#include <util-cxx.h>
 #include <tests/llvm.h>
 #include <string>
 
@@ -35,8 +33,7 @@ __test__clang_to_IR(void)
 }
 
 extern "C" {
-int test__clang_to_IR(struct test_suite *test __maybe_unused,
-                      int subtest __maybe_unused)
+int test__clang_to_IR(void)
 {
 	perf_clang_scope _scope;
 
@@ -44,13 +41,12 @@ int test__clang_to_IR(struct test_suite *test __maybe_unused,
 	if (!M)
 		return -1;
 	for (llvm::Function& F : *M)
-		if (F.getName() == "bpf_func__SyS_epoll_pwait")
+		if (F.getName() == "bpf_func__SyS_epoll_wait")
 			return 0;
 	return -1;
 }
 
-int test__clang_to_obj(struct test_suite *test __maybe_unused,
-                       int subtest __maybe_unused)
+int test__clang_to_obj(void)
 {
 	perf_clang_scope _scope;
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * USB FTDI client driver for Elan Digital Systems's Uxxx adapters
  *
@@ -7,6 +6,11 @@
  *
  * Author and Maintainer - Tony Olech - Elan Digital Systems
  * tony.olech@elandigitalsystems.com
+ *
+ * This program is free software;you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation, version 2.
+ *
  *
  * This driver was written by Tony Olech(tony.olech@elandigitalsystems.com)
  * based on various USB client drivers in the 2.6.15 linux kernel
@@ -202,7 +206,6 @@ static void ftdi_elan_delete(struct kref *kref)
 	mutex_unlock(&ftdi_module_lock);
 	kfree(ftdi->bulk_in_buffer);
 	ftdi->bulk_in_buffer = NULL;
-	kfree(ftdi);
 }
 
 static void ftdi_elan_put_kref(struct usb_ftdi *ftdi)
@@ -334,8 +337,7 @@ static void ftdi_elan_abandon_completions(struct usb_ftdi *ftdi)
 		*respond->result = -ESHUTDOWN;
 		*respond->value = 0;
 		complete(&respond->wait_completion);
-	}
-	mutex_unlock(&ftdi->u132_lock);
+	} mutex_unlock(&ftdi->u132_lock);
 }
 
 static void ftdi_elan_abandon_targets(struct usb_ftdi *ftdi)
@@ -765,8 +767,7 @@ static int ftdi_elan_total_command_size(struct usb_ftdi *ftdi, int command_size)
 		struct u132_command *command = &ftdi->command[COMMAND_MASK &
 							      i++];
 		total_size += 5 + command->follows;
-	}
-	return total_size;
+	} return total_size;
 }
 
 static int ftdi_elan_command_engine(struct usb_ftdi *ftdi)
@@ -918,6 +919,7 @@ static int ftdi_elan_respond_engine(struct usb_ftdi *ftdi)
 	int bytes_read = 0;
 	int retry_on_empty = 1;
 	int retry_on_timeout = 3;
+	int empty_packets = 0;
 read:{
 		int packet_bytes = 0;
 		int retval = usb_bulk_msg(ftdi->udev,
@@ -962,6 +964,31 @@ read:{
 			dev_err(&ftdi->udev->dev, "error = %d with packet_bytes = %d with total %d bytes%s\n",
 				retval, packet_bytes, bytes_read, diag);
 			return retval;
+		} else if (packet_bytes == 2) {
+			unsigned char s0 = ftdi->bulk_in_buffer[0];
+			unsigned char s1 = ftdi->bulk_in_buffer[1];
+			empty_packets += 1;
+			if (s0 == 0x31 && s1 == 0x60) {
+				if (retry_on_empty-- > 0) {
+					goto more;
+				} else
+					return 0;
+			} else if (s0 == 0x31 && s1 == 0x00) {
+				if (retry_on_empty-- > 0) {
+					goto more;
+				} else
+					return 0;
+			} else {
+				if (retry_on_empty-- > 0) {
+					goto more;
+				} else
+					return 0;
+			}
+		} else if (packet_bytes == 1) {
+			if (retry_on_empty-- > 0) {
+				goto more;
+			} else
+				return 0;
 		} else {
 			if (retry_on_empty-- > 0) {
 				goto more;
@@ -1449,7 +1476,8 @@ wait:if (ftdi->disconnected > 0) {
 			command->length = 0x8007;
 			command->address = (toggle_bits << 6) | (ep_number << 2)
 				| (address << 0);
-			command->width = usb_maxpacket(urb->dev, urb->pipe);
+			command->width = usb_maxpacket(urb->dev, urb->pipe,
+						       usb_pipeout(urb->pipe));
 			command->follows = 8;
 			command->value = 0;
 			command->buffer = urb->setup_packet;
@@ -1513,7 +1541,8 @@ wait:if (ftdi->disconnected > 0) {
 							    1);
 			command->address = (toggle_bits << 6) | (ep_number << 2)
 				| (address << 0);
-			command->width = usb_maxpacket(urb->dev, urb->pipe);
+			command->width = usb_maxpacket(urb->dev, urb->pipe,
+						       usb_pipeout(urb->pipe));
 			command->follows = 0;
 			command->value = 0;
 			command->buffer = NULL;
@@ -1569,7 +1598,8 @@ wait:if (ftdi->disconnected > 0) {
 			command->length = 0x0000;
 			command->address = (toggle_bits << 6) | (ep_number << 2)
 				| (address << 0);
-			command->width = usb_maxpacket(urb->dev, urb->pipe);
+			command->width = usb_maxpacket(urb->dev, urb->pipe,
+						       usb_pipeout(urb->pipe));
 			command->follows = 0;
 			command->value = 0;
 			command->buffer = NULL;
@@ -1624,13 +1654,15 @@ wait:if (ftdi->disconnected > 0) {
 			char data[30 *3 + 4];
 			char *d = data;
 			int m = (sizeof(data) - 1) / 3 - 1;
+			int l = 0;
 			struct u132_target *target = &ftdi->target[ed];
 			struct u132_command *command = &ftdi->command[
 				COMMAND_MASK & ftdi->command_next];
 			command->header = 0x81 | (ed << 5);
 			command->address = (toggle_bits << 6) | (ep_number << 2)
 				| (address << 0);
-			command->width = usb_maxpacket(urb->dev, urb->pipe);
+			command->width = usb_maxpacket(urb->dev, urb->pipe,
+						       usb_pipeout(urb->pipe));
 			command->follows = min_t(u32, 1024,
 						 urb->transfer_buffer_length -
 						 urb->actual_length);
@@ -1646,6 +1678,7 @@ wait:if (ftdi->disconnected > 0) {
 				} else if (i++ < m) {
 					int w = sprintf(d, " %02X", *b++);
 					d += w;
+					l += w;
 				} else
 					d += sprintf(d, " ..");
 			}
@@ -1709,7 +1742,8 @@ wait:if (ftdi->disconnected > 0) {
 							    1);
 			command->address = (toggle_bits << 6) | (ep_number << 2)
 				| (address << 0);
-			command->width = usb_maxpacket(urb->dev, urb->pipe);
+			command->width = usb_maxpacket(urb->dev, urb->pipe,
+						       usb_pipeout(urb->pipe));
 			command->follows = 0;
 			command->value = 0;
 			command->buffer = NULL;
@@ -1954,6 +1988,7 @@ static int ftdi_elan_synchronize(struct usb_ftdi *ftdi)
 	int long_stop = 10;
 	int retry_on_timeout = 5;
 	int retry_on_empty = 10;
+	int err_count = 0;
 	retval = ftdi_elan_flush_input_fifo(ftdi);
 	if (retval)
 		return retval;
@@ -2018,6 +2053,13 @@ static int ftdi_elan_synchronize(struct usb_ftdi *ftdi)
 						goto read;
 					} else
 						goto reset;
+				} else if (s1 == 0x31 && s2 == 0x60) {
+					if (read_stop-- > 0) {
+						goto read;
+					} else {
+						dev_err(&ftdi->udev->dev, "retry limit reached\n");
+						continue;
+					}
 				} else {
 					if (read_stop-- > 0) {
 						goto read;
@@ -2048,6 +2090,7 @@ static int ftdi_elan_synchronize(struct usb_ftdi *ftdi)
 					continue;
 				}
 			} else {
+				err_count += 1;
 				dev_err(&ftdi->udev->dev, "error = %d\n",
 					retval);
 				if (read_stop-- > 0) {
@@ -2090,6 +2133,7 @@ more:{
 				} else
 					d += sprintf(d, " ..");
 				bytes_read += 1;
+				continue;
 			}
 			goto more;
 		} else if (packet_bytes > 1) {

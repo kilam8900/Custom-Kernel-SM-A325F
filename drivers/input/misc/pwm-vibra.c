@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  PWM vibrator driver
  *
@@ -9,6 +8,11 @@
  *
  *  Based on PWM beeper driver:
  *  Copyright (C) 2010, Lars-Peter Clausen <lars@metafoo.de>
+ *
+ *  This program is free software; you can redistribute it and/or modify it
+ *  under  the terms of the GNU General  Public License as published by the
+ *  Free Software Foundation;  either version 2 of the License, or (at your
+ *  option) any later version.
  */
 
 #include <linux/input.h>
@@ -190,7 +194,7 @@ static int pwm_vibrator_probe(struct platform_device *pdev)
 
 	default:
 		dev_err(&pdev->dev, "Failed to request direction pwm: %d", err);
-		fallthrough;
+		/* Fall through */
 
 	case -EPROBE_DEFER:
 		return err;
@@ -222,7 +226,7 @@ static int pwm_vibrator_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int pwm_vibrator_suspend(struct device *dev)
+static int __maybe_unused pwm_vibrator_suspend(struct device *dev)
 {
 	struct pwm_vibrator *vibrator = dev_get_drvdata(dev);
 
@@ -233,7 +237,7 @@ static int pwm_vibrator_suspend(struct device *dev)
 	return 0;
 }
 
-static int pwm_vibrator_resume(struct device *dev)
+static int __maybe_unused pwm_vibrator_resume(struct device *dev)
 {
 	struct pwm_vibrator *vibrator = dev_get_drvdata(dev);
 
@@ -243,8 +247,8 @@ static int pwm_vibrator_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(pwm_vibrator_pm_ops,
-				pwm_vibrator_suspend, pwm_vibrator_resume);
+static SIMPLE_DEV_PM_OPS(pwm_vibrator_pm_ops,
+			 pwm_vibrator_suspend, pwm_vibrator_resume);
 
 #ifdef CONFIG_OF
 static const struct of_device_id pwm_vibra_dt_match_table[] = {
@@ -258,7 +262,7 @@ static struct platform_driver pwm_vibrator_driver = {
 	.probe	= pwm_vibrator_probe,
 	.driver	= {
 		.name	= "pwm-vibrator",
-		.pm	= pm_sleep_ptr(&pwm_vibrator_pm_ops),
+		.pm	= &pwm_vibrator_pm_ops,
 		.of_match_table = of_match_ptr(pwm_vibra_dt_match_table),
 	},
 };

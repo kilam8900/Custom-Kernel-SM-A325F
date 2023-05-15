@@ -1,9 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * Author	Karsten Keil <kkeil@novell.com>
  *
  * Copyright 2008  by Karsten Keil <kkeil@novell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #include <linux/mISDNif.h>
@@ -94,7 +103,7 @@ mISDN_ctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 static inline void
 mISDN_sock_cmsg(struct sock *sk, struct msghdr *msg, struct sk_buff *skb)
 {
-	struct __kernel_old_timeval	tv;
+	struct timeval	tv;
 
 	if (_pms(sk)->cmask & MISDN_TIME_STAMP) {
 		skb_get_timestamp(skb, &tv);
@@ -121,7 +130,7 @@ mISDN_sock_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
 	if (sk->sk_state == MISDN_CLOSED)
 		return 0;
 
-	skb = skb_recv_datagram(sk, flags, &err);
+	skb = skb_recv_datagram(sk, flags, flags & MSG_DONTWAIT, &err);
 	if (!skb)
 		return err;
 
@@ -227,7 +236,8 @@ mISDN_sock_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
 	}
 
 done:
-	kfree_skb(skb);
+	if (skb)
+		kfree_skb(skb);
 	release_sock(sk);
 	return err;
 }
@@ -401,20 +411,20 @@ data_sock_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 }
 
 static int data_sock_setsockopt(struct socket *sock, int level, int optname,
-				sockptr_t optval, unsigned int len)
+				char __user *optval, unsigned int len)
 {
 	struct sock *sk = sock->sk;
 	int err = 0, opt = 0;
 
 	if (*debug & DEBUG_SOCKET)
-		printk(KERN_DEBUG "%s(%p, %d, %x, optval, %d)\n", __func__, sock,
-		       level, optname, len);
+		printk(KERN_DEBUG "%s(%p, %d, %x, %p, %d)\n", __func__, sock,
+		       level, optname, optval, len);
 
 	lock_sock(sk);
 
 	switch (optname) {
 	case MISDN_TIME_STAMP:
-		if (copy_from_sockptr(&opt, optval, sizeof(int))) {
+		if (get_user(opt, (int __user *)optval)) {
 			err = -EFAULT;
 			break;
 		}
@@ -550,7 +560,7 @@ done:
 
 static int
 data_sock_getname(struct socket *sock, struct sockaddr *addr,
-		  int peer)
+		  int *addr_len, int peer)
 {
 	struct sockaddr_mISDN	*maddr = (struct sockaddr_mISDN *) addr;
 	struct sock		*sk = sock->sk;
@@ -560,13 +570,14 @@ data_sock_getname(struct socket *sock, struct sockaddr *addr,
 
 	lock_sock(sk);
 
+	*addr_len = sizeof(*maddr);
 	maddr->family = AF_ISDN;
 	maddr->dev = _pms(sk)->dev->id;
 	maddr->channel = _pms(sk)->ch.nr;
 	maddr->sapi = _pms(sk)->ch.addr & 0xff;
 	maddr->tei = (_pms(sk)->ch.addr >> 8) & 0xff;
 	release_sock(sk);
-	return sizeof(*maddr);
+	return 0;
 }
 
 static const struct proto_ops data_sock_ops = {
@@ -736,8 +747,11 @@ static const struct proto_ops base_sock_ops = {
 	.getname	= sock_no_getname,
 	.sendmsg	= sock_no_sendmsg,
 	.recvmsg	= sock_no_recvmsg,
+	.poll		= sock_no_poll,
 	.listen		= sock_no_listen,
 	.shutdown	= sock_no_shutdown,
+	.setsockopt	= sock_no_setsockopt,
+	.getsockopt	= sock_no_getsockopt,
 	.connect	= sock_no_connect,
 	.socketpair	= sock_no_socketpair,
 	.accept		= sock_no_accept,

@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* Task credentials management - see Documentation/security/credentials.rst
  *
  * Copyright (C) 2008 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public Licence
+ * as published by the Free Software Foundation; either version
+ * 2 of the Licence, or (at your option) any later version.
  */
 #include <linux/export.h>
 #include <linux/cred.h>
@@ -15,7 +19,12 @@
 #include <linux/security.h>
 #include <linux/binfmts.h>
 #include <linux/cn_proc.h>
-#include <linux/uidgid.h>
+#ifdef CONFIG_KDP_CRED
+#include <linux/slub_def.h>
+#endif
+#ifdef CONFIG_RUSTUH_KDP
+#include <linux/rustkdp.h>
+#endif
 
 #if 0
 #define kdebug(FMT, ...)						\
@@ -33,12 +42,63 @@ do {									\
 static struct kmem_cache *cred_jar;
 
 /* init to 2 - one for init_task, one to ensure it is never freed */
-static struct group_info init_groups = { .usage = ATOMIC_INIT(2) };
+struct group_info init_groups = { .usage = ATOMIC_INIT(2) };
+
+#ifdef CONFIG_KDP_CRED
+int rkp_cred_enable __kdp_ro = 0;
+
+static struct kmem_cache *cred_jar_ro;
+struct kmem_cache *tsec_jar;
+struct kmem_cache *usecnt_jar;
+
+struct kdp_usecnt init_cred_use_cnt = {
+	.kdp_use_cnt = ATOMIC_INIT(4),
+	.kdp_rcu_head.non_rcu = 0,
+	.kdp_rcu_head.bp_cred = (void *)0,
+	.kdp_rcu_head.reflected_cred = (void *)0,
+};
+
+unsigned int rkp_get_usecount(struct cred *cred)
+{
+	if (rkp_ro_page((unsigned long )cred))
+		return (unsigned int)rocred_uc_read(cred);
+	else
+		return atomic_read(&cred->usage);
+}
+
+struct cred *get_new_cred(struct cred *cred)
+{
+	if (rkp_ro_page((unsigned long)cred))
+		rocred_uc_inc(cred);
+	else
+		atomic_inc(&cred->usage);
+	return cred;
+}
+
+void put_cred(const struct cred *_cred)
+{
+	struct cred *cred = (struct cred *) _cred;
+
+	validate_creds(cred);
+
+	if (rkp_ro_page((unsigned long)cred)) {
+		if (rocred_uc_dec_and_test(cred))
+			__put_cred(cred);
+	} else {
+		if (atomic_dec_and_test(&(cred)->usage))
+			__put_cred(cred);
+	}
+}
+#endif  /* CONFIG_KDP_CRED */
 
 /*
  * The initial credentials for the initial task
  */
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+struct cred init_cred __kdp_ro = {
+#else
 struct cred init_cred = {
+#endif
 	.usage			= ATOMIC_INIT(4),
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	.subscribers		= ATOMIC_INIT(2),
@@ -60,15 +120,33 @@ struct cred init_cred = {
 	.user			= INIT_USER,
 	.user_ns		= &init_user_ns,
 	.group_info		= &init_groups,
-	.ucounts		= &init_ucounts,
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+	.use_cnt		= (atomic_t *)&init_cred_use_cnt,
+	.bp_task		= &init_task,
+	.bp_pgd			= (void *) 0,
+	.type			= 0,
+#endif
 };
 
+#ifdef CONFIG_KDP_CRED
+void rkp_get_init_cred(void)
+{
+	if (rkp_ro_page((unsigned long)&init_cred))
+		rocred_uc_inc((&init_cred));
+	else
+		atomic_inc(&init_cred.usage);
+}
+EXPORT_SYMBOL(rkp_get_init_cred);
+#endif
+
+#ifndef CONFIG_RUSTUH_KDP_CRED
 static inline void set_cred_subscribers(struct cred *cred, int n)
 {
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	atomic_set(&cred->subscribers, n);
 #endif
 }
+#endif
 
 static inline int read_cred_subscribers(const struct cred *cred)
 {
@@ -120,11 +198,33 @@ static void put_cred_rcu(struct rcu_head *rcu)
 	if (cred->group_info)
 		put_group_info(cred->group_info);
 	free_uid(cred->user);
-	if (cred->ucounts)
-		put_ucounts(cred->ucounts);
 	put_user_ns(cred->user_ns);
 	kmem_cache_free(cred_jar, cred);
 }
+
+#ifdef CONFIG_KDP_CRED
+/* We use another function to free protected creds. */
+static void put_ro_cred_rcu(struct rcu_head *rcu)
+{
+	struct cred *cred = container_of(rcu, struct ro_rcu_head, rcu)->bp_cred;
+	if (rocred_uc_read(cred) != 0)
+		panic("RO_CRED: put_ro_cred_rcu() sees %p with usage %d\n",
+				cred, rocred_uc_read(cred));
+
+	security_cred_free(cred);
+	key_put(cred->session_keyring);
+	key_put(cred->process_keyring);
+	key_put(cred->thread_keyring);
+	key_put(cred->request_key_auth);
+	if (cred->group_info)
+		put_group_info(cred->group_info);
+	free_uid(cred->user);
+	put_user_ns(cred->user_ns);
+	if (cred->use_cnt)
+		kmem_cache_free(usecnt_jar,(void *)cred->use_cnt);
+	kmem_cache_free(cred_jar_ro, cred);
+}
+#endif
 
 /**
  * __put_cred - Destroy a set of credentials
@@ -138,19 +238,54 @@ void __put_cred(struct cred *cred)
 	       atomic_read(&cred->usage),
 	       read_cred_subscribers(cred));
 
+#ifdef CONFIG_KDP_CRED
+	if (rkp_ro_page((unsigned long)cred))
+		BUG_ON((rocred_uc_read(cred)) != 0);
+	else
+#endif
+#ifdef CONFIG_RUSTUH_KDP_CRED
+	if (is_kdp_protect_addr((unsigned long)cred))
+		BUG_ON(ROCRED_UC_READ(cred) != 0);
+	else
+#endif
 	BUG_ON(atomic_read(&cred->usage) != 0);
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	BUG_ON(read_cred_subscribers(cred) != 0);
 	cred->magic = CRED_MAGIC_DEAD;
 	cred->put_addr = __builtin_return_address(0);
 #endif
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+	if (cred == current->cred)
+		printk("[KDP] cred->security: %p\n", cred->security);
+#endif
 	BUG_ON(cred == current->cred);
 	BUG_ON(cred == current->real_cred);
 
+#ifdef CONFIG_KDP_CRED
+	if (rkp_ro_page((unsigned long)cred)) {
+		if (get_rocred_rcu(cred)->non_rcu)
+			put_ro_cred_rcu(&(get_rocred_rcu(cred)->rcu));
+	        else
+			call_rcu(&(get_rocred_rcu(cred)->rcu), put_ro_cred_rcu);
+	}
+	else {
+#endif
+#ifdef CONFIG_RUSTUH_KDP_CRED
+	if (is_kdp_protect_addr((unsigned long)cred)) {
+		if (GET_ROCRED_RCU(cred)->non_rcu)
+			put_rocred_rcu(&(GET_ROCRED_RCU(cred)->rcu));
+		else
+			call_rcu(&(GET_ROCRED_RCU(cred)->rcu), put_rocred_rcu);
+	}
+	else {
+#endif
 	if (cred->non_rcu)
 		put_cred_rcu(&cred->rcu);
 	else
 		call_rcu(&cred->rcu, put_cred_rcu);
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+	}
+#endif
 }
 EXPORT_SYMBOL(__put_cred);
 
@@ -176,11 +311,6 @@ void exit_creds(struct task_struct *tsk)
 	validate_creds(cred);
 	alter_cred_subscribers(cred, -1);
 	put_cred(cred);
-
-#ifdef CONFIG_KEYS_REQUEST_CACHE
-	key_put(tsk->cached_requested_key);
-	tsk->cached_requested_key = NULL;
-#endif
 }
 
 /**
@@ -196,18 +326,39 @@ void exit_creds(struct task_struct *tsk)
 const struct cred *get_task_cred(struct task_struct *task)
 {
 	const struct cred *cred;
-
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+	int inc_test;
+#endif
 	rcu_read_lock();
 
+#ifdef CONFIG_KDP_CRED
 	do {
 		cred = __task_cred((task));
 		BUG_ON(!cred);
-	} while (!get_cred_rcu(cred));
-
+		if (rkp_ro_page((unsigned long)cred)) {
+			inc_test = rocred_uc_inc_not_zero(cred);
+		}
+		else
+			inc_test = atomic_inc_not_zero(&((struct cred *)cred)->usage);
+	} while (!inc_test);
+#elif defined(CONFIG_RUSTUH_KDP_CRED)
+	do {
+		cred = __task_cred((task));
+		BUG_ON(!cred);
+		if (is_kdp_protect_addr((unsigned long)cred))
+			inc_test = ROCRED_UC_INC_NOT_ZERO(cred);
+		else
+			inc_test = atomic_inc_not_zero(&((struct cred *)cred)->usage);
+	} while (!inc_test);
+#else
+	do {
+		cred = __task_cred((task));
+		BUG_ON(!cred);
+	} while (!atomic_inc_not_zero(&((struct cred *)cred)->usage));
+#endif
 	rcu_read_unlock();
 	return cred;
 }
-EXPORT_SYMBOL(get_task_cred);
 
 /*
  * Allocate blank credentials, such that the credentials can be filled in at a
@@ -225,6 +376,7 @@ struct cred *cred_alloc_blank(void)
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	new->magic = CRED_MAGIC;
 #endif
+
 	if (security_cred_alloc_blank(new, GFP_KERNEL_ACCOUNT) < 0)
 		goto error;
 
@@ -234,6 +386,73 @@ error:
 	abort_creds(new);
 	return NULL;
 }
+
+#ifdef CONFIG_KDP_CRED
+/**
+ * prepare_ro_creds - Prepare a new set of credentials which is protected by KDP
+ */
+static struct cred *prepare_ro_creds(struct cred *old, int kdp_cmd, u64 p)
+{
+	u64 pgd =(u64)(current->mm?current->mm->pgd:swapper_pg_dir);
+	struct cred *new_ro;
+	void *use_cnt_ptr = NULL;
+	void *rcu_ptr = NULL;
+	void *tsec = NULL;
+	cred_param_t cred_param;
+	new_ro = kmem_cache_alloc(cred_jar_ro, GFP_KERNEL);
+
+	if (!new_ro)
+		panic("[%d] : kmem_cache_alloc() failed", kdp_cmd);
+
+	use_cnt_ptr = kmem_cache_alloc(usecnt_jar, GFP_KERNEL);
+	if (!use_cnt_ptr)
+		panic("[%d] : Unable to allocate usage pointer\n", kdp_cmd);
+
+	rcu_ptr = get_usecnt_rcu(use_cnt_ptr);
+	((struct ro_rcu_head*)rcu_ptr)->bp_cred = (void *)new_ro;
+
+	tsec = kmem_cache_alloc(tsec_jar, GFP_KERNEL);
+	if (!tsec)
+		panic("[%d] : Unable to allocate security pointer\n", kdp_cmd);
+
+	rkp_cred_fill_params(old, new_ro, use_cnt_ptr, tsec, kdp_cmd, p);
+	uh_call(UH_APP_RKP, RKP_KDP_X46, (u64)&cred_param, (u64)current, 0, 0);
+	if (kdp_cmd == RKP_CMD_COPY_CREDS) {
+		if ((new_ro->bp_task != (void *)p)
+			|| new_ro->security != tsec
+			|| new_ro->use_cnt != use_cnt_ptr) {
+			panic("[%d]: RKP Call failed task=#%p:%p#, sec=#%p:%p#, usecnt=#%p:%p#", kdp_cmd, new_ro->bp_task, (void *)p, new_ro->security, tsec, new_ro->use_cnt, use_cnt_ptr);
+		}
+	} else {
+		if ((new_ro->bp_task != current)||
+			(current->mm
+			&& new_ro->bp_pgd != (void *)pgd) ||
+			(new_ro->security != tsec) ||
+			(new_ro->use_cnt != use_cnt_ptr)) {
+			panic("[%d]: RKP Call failed task=#%p:%p#, sec=#%p:%p#, usecnt=#%p:%p#, pgd=#%p:%p#", kdp_cmd, new_ro->bp_task, current, new_ro->security, tsec, new_ro->use_cnt, use_cnt_ptr, new_ro->bp_pgd, (void *)pgd);
+		}
+	}
+
+	get_rocred_rcu(new_ro)->non_rcu = old->non_rcu;
+	get_rocred_rcu(new_ro)->reflected_cred = 0;
+	rocred_uc_set(new_ro, 2);
+
+	set_cred_subscribers(new_ro, 0);
+	get_group_info(new_ro->group_info);
+	get_uid(new_ro->user);
+	get_user_ns(new_ro->user_ns);
+
+#ifdef CONFIG_KEYS
+	key_get(new_ro->session_keyring);
+	key_get(new_ro->process_keyring);
+	key_get(new_ro->thread_keyring);
+	key_get(new_ro->request_key_auth);
+#endif
+
+	validate_creds(new_ro);
+	return new_ro;
+}
+#endif
 
 /**
  * prepare_creds - Prepare a new set of credentials for modification
@@ -284,13 +503,8 @@ struct cred *prepare_creds(void)
 	new->security = NULL;
 #endif
 
-	new->ucounts = get_ucounts(new->ucounts);
-	if (!new->ucounts)
-		goto error;
-
 	if (security_prepare_creds(new, old, GFP_KERNEL_ACCOUNT) < 0)
 		goto error;
-
 	validate_creds(new);
 	return new;
 
@@ -322,11 +536,48 @@ struct cred *prepare_exec_creds(void)
 	new->process_keyring = NULL;
 #endif
 
-	new->suid = new->fsuid = new->euid;
-	new->sgid = new->fsgid = new->egid;
-
 	return new;
 }
+
+#ifdef CONFIG_KDP_CRED
+int rkp_from_tsec_jar(unsigned long addr)
+{
+	static void *objp;
+	static struct kmem_cache *s;
+	static struct page *page;
+
+	objp = (void *)addr;
+
+	if(!objp)
+		return 0;
+
+	page = virt_to_head_page(objp);
+	s = page->slab_cache;
+	if (s && s->name) {
+		if(!strcmp(s->name,"tsec_jar")) {
+			return 1;
+		}
+	}
+	return 0;
+}
+int chk_invalid_kern_ptr(u64 tsec)
+{
+	return (((u64)tsec >> 36) != (u64)0xFFFFFFC);
+}
+void rkp_free_security(unsigned long tsec)
+{
+	if (!tsec ||
+		chk_invalid_kern_ptr(tsec))
+		return;
+
+	if (rkp_ro_page(tsec) &&
+		rkp_from_tsec_jar(tsec)) {
+		kmem_cache_free(tsec_jar,(void *)tsec);
+	} else {
+		kfree((void *)tsec);
+	}
+}
+#endif
 
 /*
  * Copy credentials for the new process created by fork()
@@ -342,10 +593,12 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 	struct cred *new;
 	int ret;
 
-#ifdef CONFIG_KEYS_REQUEST_CACHE
-	p->cached_requested_key = NULL;
+#ifdef CONFIG_KDP_CRED
+	if (!rkp_cred_enable) {
 #endif
-
+#ifdef CONFIG_RUSTUH_KDP_CRED
+	if (!kdp_enable) {
+#endif
 	if (
 #ifdef CONFIG_KEYS
 		!p->cred->thread_keyring &&
@@ -358,9 +611,12 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 		kdebug("share_creds(%p{%d,%d})",
 		       p->cred, atomic_read(&p->cred->usage),
 		       read_cred_subscribers(p->cred));
-		inc_rlimit_ucounts(task_ucounts(p), UCOUNT_RLIMIT_NPROC, 1);
+		atomic_inc(&p->cred->user->processes);
 		return 0;
 	}
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+	}
+#endif
 
 	new = prepare_creds();
 	if (!new)
@@ -368,9 +624,6 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 
 	if (clone_flags & CLONE_NEWUSER) {
 		ret = create_user_ns(new);
-		if (ret < 0)
-			goto error_put;
-		ret = set_cred_ucounts(new);
 		if (ret < 0)
 			goto error_put;
 	}
@@ -394,10 +647,25 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 	}
 #endif
 
+	atomic_inc(&new->user->processes);
+#ifdef CONFIG_KDP_CRED
+	if (rkp_cred_enable) {
+		p->cred = p->real_cred = prepare_ro_creds(new, RKP_CMD_COPY_CREDS, (u64)p);
+		put_cred(new);
+	} else {
+#elif defined(CONFIG_RUSTUH_KDP_CRED)
+	if (kdp_enable) {
+		p->cred = p->real_cred = prepare_ro_creds(new, CMD_COPY_CREDS, (u64)p);
+		put_cred(new);
+	} else {
+#endif
 	p->cred = p->real_cred = get_cred(new);
-	inc_rlimit_ucounts(task_ucounts(p), UCOUNT_RLIMIT_NPROC, 1);
 	alter_cred_subscribers(new, 2);
 	validate_creds(new);
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+	}
+#endif
+
 	return 0;
 
 error_put:
@@ -459,6 +727,16 @@ int commit_creds(struct cred *new)
 	validate_creds(old);
 	validate_creds(new);
 #endif
+#ifdef CONFIG_KDP_CRED
+	if (rkp_ro_page((unsigned long)new))
+		BUG_ON((rocred_uc_read(new)) < 1);
+	else
+#endif
+#ifdef CONFIG_RUSTUH_KDP_CRED
+	if (is_kdp_protect_addr((unsigned long)new))
+		BUG_ON(ROCRED_UC_READ(new) < 1);
+	else
+#endif
 	BUG_ON(atomic_read(&new->usage) < 1);
 
 	get_cred(new); /* we will require a ref for the subj creds too */
@@ -486,21 +764,40 @@ int commit_creds(struct cred *new)
 
 	/* alter the thread keyring */
 	if (!uid_eq(new->fsuid, old->fsuid))
-		key_fsuid_changed(new);
+		key_fsuid_changed(task);
 	if (!gid_eq(new->fsgid, old->fsgid))
-		key_fsgid_changed(new);
+		key_fsgid_changed(task);
 
 	/* do it
 	 * RLIMIT_NPROC limits on user->processes have already been checked
 	 * in set_user().
 	 */
 	alter_cred_subscribers(new, 2);
-	if (new->user != old->user || new->user_ns != old->user_ns)
-		inc_rlimit_ucounts(new->ucounts, UCOUNT_RLIMIT_NPROC, 1);
+	if (new->user != old->user)
+		atomic_inc(&new->user->processes);
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+#ifdef CONFIG_KDP_CRED
+	if (rkp_cred_enable) {
+		struct cred *new_ro;
+
+		new_ro = prepare_ro_creds(new, RKP_CMD_CMMIT_CREDS, 0);
+#elif CONFIG_RUSTUH_KDP_CRED
+	if (kdp_enable) {
+		struct cred *new_ro;
+		new_ro = prepare_ro_creds(new, CMD_COMMIT_CREDS, 0);
+#endif
+		rcu_assign_pointer(task->real_cred, new_ro);
+		rcu_assign_pointer(task->cred, new_ro);
+	} else {
+		rcu_assign_pointer(task->real_cred, new);
+		rcu_assign_pointer(task->cred, new);
+	}
+#else
 	rcu_assign_pointer(task->real_cred, new);
 	rcu_assign_pointer(task->cred, new);
-	if (new->user != old->user || new->user_ns != old->user_ns)
-		dec_rlimit_ucounts(old->ucounts, UCOUNT_RLIMIT_NPROC, 1);
+#endif
+	if (new->user != old->user)
+		atomic_dec(&old->user->processes);
 	alter_cred_subscribers(old, -2);
 
 	/* send notifications */
@@ -515,7 +812,16 @@ int commit_creds(struct cred *new)
 	    !gid_eq(new->sgid,  old->sgid) ||
 	    !gid_eq(new->fsgid, old->fsgid))
 		proc_id_connector(task, PROC_EVENT_GID);
-
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+#ifdef CONFIG_KDP_CRED
+	if (rkp_cred_enable) {
+#elif defined(CONFIG_RUSTUH_KDP_CRED)
+	if (kdp_enable) {
+#endif
+		put_cred(new);
+		put_cred(new);
+	}
+#endif
 	/* release the old obj and subj refs both */
 	put_cred(old);
 	put_cred(old);
@@ -538,6 +844,16 @@ void abort_creds(struct cred *new)
 
 #ifdef CONFIG_DEBUG_CREDENTIALS
 	BUG_ON(read_cred_subscribers(new) != 0);
+#endif
+#ifdef CONFIG_KDP_CRED
+	if (rkp_ro_page((unsigned long)new))
+		BUG_ON((rocred_uc_read(new)) < 1);
+	else
+#endif
+#ifdef CONFIG_RUSTUH_KDP_CRED
+	if (is_kdp_protect_addr((unsigned long)new))
+		BUG_ON(ROCRED_UC_READ(new) < 1);
+	else
 #endif
 	BUG_ON(atomic_read(&new->usage) < 1);
 	put_cred(new);
@@ -575,6 +891,27 @@ const struct cred *override_creds(const struct cred *new)
 	 */
 	get_new_cred((struct cred *)new);
 	alter_cred_subscribers(new, 1);
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+#ifdef CONFIG_KDP_CRED
+	if (rkp_cred_enable) {
+		volatile unsigned int kdp_use_count = rkp_get_usecount((struct cred *)new);
+		struct cred *new_ro;
+
+		new_ro = prepare_ro_creds((struct cred *)new, RKP_CMD_OVRD_CREDS, kdp_use_count);
+		get_rocred_rcu(new_ro)->reflected_cred = (void *)new;
+		rcu_assign_pointer(current->cred, new_ro);
+	} else
+#elif defined(CONFIG_RUSTUH_KDP_CRED)
+	if (kdp_enable) {
+		volatile unsigned int rkp_use_count = kdp_get_usecount((struct cred *)new);
+		struct cred *new_ro;
+
+		new_ro = prepare_ro_creds((struct cred *)new, CMD_OVRD_CREDS, rkp_use_count);
+		GET_ROCRED_RCU(new_ro)->reflected_cred = (void *)new;
+		rcu_assign_pointer(current->cred, new_ro);
+	} else
+#endif
+#endif
 	rcu_assign_pointer(current->cred, new);
 	alter_cred_subscribers(old, -1);
 
@@ -605,83 +942,44 @@ void revert_creds(const struct cred *old)
 	alter_cred_subscribers(old, 1);
 	rcu_assign_pointer(current->cred, old);
 	alter_cred_subscribers(override, -1);
+#if defined(CONFIG_KDP_CRED) || defined(CONFIG_RUSTUH_KDP_CRED)
+#ifdef CONFIG_KDP_CRED
+	if (rkp_cred_enable) {
+		if (rkp_ro_page((unsigned long)override)) {
+			if(get_rocred_rcu(override)->reflected_cred)
+				put_cred((struct cred *)get_rocred_rcu(override)->reflected_cred);
+			put_cred(override);
+		}
+	}
+#elif defined(CONFIG_RUSTUH_KDP_CRED)
+	if (kdp_enable) {
+		if (is_kdp_protect_addr((unsigned long)override)){
+			if(GET_ROCRED_RCU(override)->reflected_cred)
+				put_cred((struct cred *)GET_ROCRED_RCU(override)->reflected_cred);
+			put_cred(override);
+		}
+	}
+#endif
+#endif
 	put_cred(override);
 }
 EXPORT_SYMBOL(revert_creds);
 
-/**
- * cred_fscmp - Compare two credentials with respect to filesystem access.
- * @a: The first credential
- * @b: The second credential
- *
- * cred_cmp() will return zero if both credentials have the same
- * fsuid, fsgid, and supplementary groups.  That is, if they will both
- * provide the same access to files based on mode/uid/gid.
- * If the credentials are different, then either -1 or 1 will
- * be returned depending on whether @a comes before or after @b
- * respectively in an arbitrary, but stable, ordering of credentials.
- *
- * Return: -1, 0, or 1 depending on comparison
- */
-int cred_fscmp(const struct cred *a, const struct cred *b)
+#ifdef	CONFIG_KDP_CRED
+void cred_ctor(void *data)
 {
-	struct group_info *ga, *gb;
-	int g;
-
-	if (a == b)
-		return 0;
-	if (uid_lt(a->fsuid, b->fsuid))
-		return -1;
-	if (uid_gt(a->fsuid, b->fsuid))
-		return 1;
-
-	if (gid_lt(a->fsgid, b->fsgid))
-		return -1;
-	if (gid_gt(a->fsgid, b->fsgid))
-		return 1;
-
-	ga = a->group_info;
-	gb = b->group_info;
-	if (ga == gb)
-		return 0;
-	if (ga == NULL)
-		return -1;
-	if (gb == NULL)
-		return 1;
-	if (ga->ngroups < gb->ngroups)
-		return -1;
-	if (ga->ngroups > gb->ngroups)
-		return 1;
-
-	for (g = 0; g < ga->ngroups; g++) {
-		if (gid_lt(ga->gid[g], gb->gid[g]))
-			return -1;
-		if (gid_gt(ga->gid[g], gb->gid[g]))
-			return 1;
-	}
-	return 0;
+	/* Dummy constructor to make sure we have separate slabs caches. */
 }
-EXPORT_SYMBOL(cred_fscmp);
-
-int set_cred_ucounts(struct cred *new)
+void sec_ctor(void *data)
 {
-	struct ucounts *new_ucounts, *old_ucounts = new->ucounts;
-
-	/*
-	 * This optimization is needed because alloc_ucounts() uses locks
-	 * for table lookups.
-	 */
-	if (old_ucounts->ns == new->user_ns && uid_eq(old_ucounts->uid, new->uid))
-		return 0;
-
-	if (!(new_ucounts = alloc_ucounts(new->user_ns, new->uid)))
-		return -EAGAIN;
-
-	new->ucounts = new_ucounts;
-	put_ucounts(old_ucounts);
-
-	return 0;
+	/* Dummy constructor to make sure we have separate slabs caches. */
+	//printk("\n initializing sec_ctor = %p \n",data);
 }
+void usecnt_ctor(void *data)
+{
+	/* Dummy constructor to make sure we have separate slabs caches. */
+}
+#endif
 
 /*
  * initialise the credentials stuff
@@ -691,6 +989,31 @@ void __init cred_init(void)
 	/* allocate a slab in which we can store credentials */
 	cred_jar = kmem_cache_create("cred_jar", sizeof(struct cred), 0,
 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+#ifdef CONFIG_KDP_CRED
+	if (rkp_cred_enable) {
+		cred_jar_ro = kmem_cache_create("cred_jar_ro", sizeof(struct cred),
+				0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, cred_ctor);
+		if (!cred_jar_ro) {
+			panic("Unable to create RO Cred cache\n");
+		}
+
+		tsec_jar = kmem_cache_create("tsec_jar", (size_t)rkp_get_task_sec_size(),
+				0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, sec_ctor);
+		if (!tsec_jar) {
+			panic("Unable to create RO security cache\n");
+		}
+
+		usecnt_jar = kmem_cache_create("usecnt_jar", sizeof(atomic_t) + sizeof(struct ro_rcu_head),
+				0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, usecnt_ctor);
+		if (!usecnt_jar) {
+			panic("Unable to create use count jar\n");
+		}
+		uh_call(UH_APP_RKP, RKP_KDP_X42, (u64)cred_jar_ro->size, (u64)tsec_jar->size, 0, 0);
+	}
+#endif
+#ifdef CONFIG_RUSTUH_KDP_CRED
+	kdp_cred_init();
+#endif
 }
 
 /**
@@ -701,21 +1024,20 @@ void __init cred_init(void)
  * override a task's own credentials so that work can be done on behalf of that
  * task that requires a different subjective context.
  *
- * @daemon is used to provide a base cred, with the security data derived from
- * that; if this is "&init_task", they'll be set to 0, no groups, full
- * capabilities, and no keys.
+ * @daemon is used to provide a base for the security record, but can be NULL.
+ * If @daemon is supplied, then the security data will be derived from that;
+ * otherwise they'll be set to 0 and no groups, full capabilities and no keys.
  *
  * The caller may change these controls afterwards if desired.
  *
  * Returns the new credentials or NULL if out of memory.
+ *
+ * Does not take, and does not return holding current->cred_replace_mutex.
  */
 struct cred *prepare_kernel_cred(struct task_struct *daemon)
 {
 	const struct cred *old;
 	struct cred *new;
-
-	if (WARN_ON_ONCE(!daemon))
-		return NULL;
 
 	new = kmem_cache_alloc(cred_jar, GFP_KERNEL);
 	if (!new)
@@ -723,7 +1045,11 @@ struct cred *prepare_kernel_cred(struct task_struct *daemon)
 
 	kdebug("prepare_kernel_cred() alloc %p", new);
 
-	old = get_task_cred(daemon);
+	if (daemon)
+		old = get_task_cred(daemon);
+	else
+		old = get_cred(&init_cred);
+
 	validate_creds(old);
 
 	*new = *old;
@@ -745,10 +1071,6 @@ struct cred *prepare_kernel_cred(struct task_struct *daemon)
 #ifdef CONFIG_SECURITY
 	new->security = NULL;
 #endif
-	new->ucounts = get_ucounts(new->ucounts);
-	if (!new->ucounts)
-		goto error;
-
 	if (security_prepare_creds(new, old, GFP_KERNEL_ACCOUNT) < 0)
 		goto error;
 
@@ -825,6 +1147,19 @@ bool creds_are_invalid(const struct cred *cred)
 {
 	if (cred->magic != CRED_MAGIC)
 		return true;
+#ifdef CONFIG_SECURITY_SELINUX
+	/*
+	 * cred->security == NULL if security_cred_alloc_blank() or
+	 * security_prepare_creds() returned an error.
+	 */
+	if (selinux_is_enabled() && cred->security) {
+		if ((unsigned long) cred->security < PAGE_SIZE)
+			return true;
+		if ((*(u32 *)cred->security & 0xffffff00) ==
+		    (POISON_FREE << 24 | POISON_FREE << 16 | POISON_FREE << 8))
+			return true;
+	}
+#endif
 	return false;
 }
 EXPORT_SYMBOL(creds_are_invalid);
@@ -869,7 +1204,7 @@ static void dump_invalid_creds(const struct cred *cred, const char *label,
 /*
  * report use of invalid credentials
  */
-void __noreturn __invalid_creds(const struct cred *cred, const char *file, unsigned line)
+void __invalid_creds(const struct cred *cred, const char *file, unsigned line)
 {
 	printk(KERN_ERR "CRED: Invalid credentials\n");
 	printk(KERN_ERR "CRED: At %s:%u\n", file, line);

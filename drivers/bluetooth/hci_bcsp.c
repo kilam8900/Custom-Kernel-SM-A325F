@@ -1,10 +1,25 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *
  *  Bluetooth HCI UART driver
  *
  *  Copyright (C) 2002-2003  Fabrizio Gennari <fabrizio.gennari@philips.com>
  *  Copyright (C) 2004-2005  Marcel Holtmann <marcel@holtmann.org>
+ *
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *
  */
 
 #include <linux/module.h>
@@ -50,7 +65,6 @@ struct bcsp_struct {
 	u8	rxseq_txack;		/* rxseq == txack. */
 	u8	rxack;			/* Last packet sent by us that the peer ack'ed */
 	struct	timer_list tbcsp;
-	struct	hci_uart *hu;
 
 	enum {
 		BCSP_W4_PKT_DELIMITER,
@@ -378,7 +392,7 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 		i++;
 
 		__skb_unlink(skb, &bcsp->unack);
-		dev_kfree_skb_irq(skb);
+		kfree_skb(skb);
 	}
 
 	if (skb_queue_empty(&bcsp->unack))
@@ -686,10 +700,10 @@ static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
 }
 
 	/* Arrange to retransmit all messages in the relq. */
-static void bcsp_timed_event(struct timer_list *t)
+static void bcsp_timed_event(unsigned long arg)
 {
-	struct bcsp_struct *bcsp = from_timer(bcsp, t, tbcsp);
-	struct hci_uart *hu = bcsp->hu;
+	struct hci_uart *hu = (struct hci_uart *)arg;
+	struct bcsp_struct *bcsp = hu->priv;
 	struct sk_buff *skb;
 	unsigned long flags;
 
@@ -718,12 +732,11 @@ static int bcsp_open(struct hci_uart *hu)
 		return -ENOMEM;
 
 	hu->priv = bcsp;
-	bcsp->hu = hu;
 	skb_queue_head_init(&bcsp->unack);
 	skb_queue_head_init(&bcsp->rel);
 	skb_queue_head_init(&bcsp->unrel);
 
-	timer_setup(&bcsp->tbcsp, bcsp_timed_event, 0);
+	setup_timer(&bcsp->tbcsp, bcsp_timed_event, (u_long)hu);
 
 	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 
@@ -737,7 +750,7 @@ static int bcsp_close(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
 
-	timer_shutdown_sync(&bcsp->tbcsp);
+	del_timer_sync(&bcsp->tbcsp);
 
 	hu->priv = NULL;
 

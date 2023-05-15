@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /* Sensirion SHT3x-DIS humidity and temperature sensor driver.
  * The SHT3x comes in many different versions, this driver is for the
  * I2C version only.
@@ -6,6 +5,17 @@
  * Copyright (C) 2016 Sensirion AG, Switzerland
  * Author: David Frey <david.frey@sensirion.com>
  * Author: Pascal Sachs <pascal.sachs@sensirion.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #include <asm/page.h>
@@ -320,7 +330,7 @@ static ssize_t temp1_limit_show(struct device *dev,
 	u8 index = to_sensor_dev_attr(attr)->index;
 	int temperature_limit = data->temperature_limits[index];
 
-	return sysfs_emit(buf, "%d\n", temperature_limit);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", temperature_limit);
 }
 
 static ssize_t humidity1_limit_show(struct device *dev,
@@ -331,7 +341,7 @@ static ssize_t humidity1_limit_show(struct device *dev,
 	u8 index = to_sensor_dev_attr(attr)->index;
 	u32 humidity_limit = data->humidity_limits[index];
 
-	return sysfs_emit(buf, "%u\n", humidity_limit);
+	return scnprintf(buf, PAGE_SIZE, "%u\n", humidity_limit);
 }
 
 /*
@@ -483,7 +493,7 @@ static ssize_t temp1_alarm_show(struct device *dev,
 	if (ret)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", !!(buffer[0] & 0x04));
+	return scnprintf(buf, PAGE_SIZE, "%d\n", !!(buffer[0] & 0x04));
 }
 
 static ssize_t humidity1_alarm_show(struct device *dev,
@@ -498,7 +508,7 @@ static ssize_t humidity1_alarm_show(struct device *dev,
 	if (ret)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", !!(buffer[0] & 0x08));
+	return scnprintf(buf, PAGE_SIZE, "%d\n", !!(buffer[0] & 0x08));
 }
 
 static ssize_t heater_enable_show(struct device *dev,
@@ -513,7 +523,7 @@ static ssize_t heater_enable_show(struct device *dev,
 	if (ret)
 		return ret;
 
-	return sysfs_emit(buf, "%d\n", !!(buffer[0] & 0x20));
+	return scnprintf(buf, PAGE_SIZE, "%d\n", !!(buffer[0] & 0x20));
 }
 
 static ssize_t heater_enable_store(struct device *dev,
@@ -550,7 +560,7 @@ static ssize_t update_interval_show(struct device *dev,
 {
 	struct sht3x_data *data = dev_get_drvdata(dev);
 
-	return sysfs_emit(buf, "%u\n",
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
 			 mode_to_update_interval[data->mode]);
 }
 
@@ -619,22 +629,40 @@ out:
 	return count;
 }
 
-static SENSOR_DEVICE_ATTR_RO(temp1_input, temp1_input, 0);
-static SENSOR_DEVICE_ATTR_RO(humidity1_input, humidity1_input, 0);
-static SENSOR_DEVICE_ATTR_RW(temp1_max, temp1_limit, limit_max);
-static SENSOR_DEVICE_ATTR_RW(humidity1_max, humidity1_limit, limit_max);
-static SENSOR_DEVICE_ATTR_RW(temp1_max_hyst, temp1_limit, limit_max_hyst);
-static SENSOR_DEVICE_ATTR_RW(humidity1_max_hyst, humidity1_limit,
-			     limit_max_hyst);
-static SENSOR_DEVICE_ATTR_RW(temp1_min, temp1_limit, limit_min);
-static SENSOR_DEVICE_ATTR_RW(humidity1_min, humidity1_limit, limit_min);
-static SENSOR_DEVICE_ATTR_RW(temp1_min_hyst, temp1_limit, limit_min_hyst);
-static SENSOR_DEVICE_ATTR_RW(humidity1_min_hyst, humidity1_limit,
-			     limit_min_hyst);
-static SENSOR_DEVICE_ATTR_RO(temp1_alarm, temp1_alarm, 0);
-static SENSOR_DEVICE_ATTR_RO(humidity1_alarm, humidity1_alarm, 0);
-static SENSOR_DEVICE_ATTR_RW(heater_enable, heater_enable, 0);
-static SENSOR_DEVICE_ATTR_RW(update_interval, update_interval, 0);
+static SENSOR_DEVICE_ATTR(temp1_input, S_IRUGO, temp1_input_show, NULL, 0);
+static SENSOR_DEVICE_ATTR(humidity1_input, S_IRUGO, humidity1_input_show,
+			  NULL, 0);
+static SENSOR_DEVICE_ATTR(temp1_max, S_IRUGO | S_IWUSR,
+			  temp1_limit_show, temp1_limit_store,
+			  limit_max);
+static SENSOR_DEVICE_ATTR(humidity1_max, S_IRUGO | S_IWUSR,
+			  humidity1_limit_show, humidity1_limit_store,
+			  limit_max);
+static SENSOR_DEVICE_ATTR(temp1_max_hyst, S_IRUGO | S_IWUSR,
+			  temp1_limit_show, temp1_limit_store,
+			  limit_max_hyst);
+static SENSOR_DEVICE_ATTR(humidity1_max_hyst, S_IRUGO | S_IWUSR,
+			  humidity1_limit_show, humidity1_limit_store,
+			  limit_max_hyst);
+static SENSOR_DEVICE_ATTR(temp1_min, S_IRUGO | S_IWUSR,
+			  temp1_limit_show, temp1_limit_store,
+			  limit_min);
+static SENSOR_DEVICE_ATTR(humidity1_min, S_IRUGO | S_IWUSR,
+			  humidity1_limit_show, humidity1_limit_store,
+			  limit_min);
+static SENSOR_DEVICE_ATTR(temp1_min_hyst, S_IRUGO | S_IWUSR,
+			  temp1_limit_show, temp1_limit_store,
+			  limit_min_hyst);
+static SENSOR_DEVICE_ATTR(humidity1_min_hyst, S_IRUGO | S_IWUSR,
+			  humidity1_limit_show, humidity1_limit_store,
+			  limit_min_hyst);
+static SENSOR_DEVICE_ATTR(temp1_alarm, S_IRUGO, temp1_alarm_show, NULL, 0);
+static SENSOR_DEVICE_ATTR(humidity1_alarm, S_IRUGO, humidity1_alarm_show,
+			  NULL, 0);
+static SENSOR_DEVICE_ATTR(heater_enable, S_IRUGO | S_IWUSR,
+			  heater_enable_show, heater_enable_store, 0);
+static SENSOR_DEVICE_ATTR(update_interval, S_IRUGO | S_IWUSR,
+			  update_interval_show, update_interval_store, 0);
 
 static struct attribute *sht3x_attrs[] = {
 	&sensor_dev_attr_temp1_input.dev_attr.attr,
@@ -662,9 +690,8 @@ static struct attribute *sts3x_attrs[] = {
 ATTRIBUTE_GROUPS(sht3x);
 ATTRIBUTE_GROUPS(sts3x);
 
-static const struct i2c_device_id sht3x_ids[];
-
-static int sht3x_probe(struct i2c_client *client)
+static int sht3x_probe(struct i2c_client *client,
+		       const struct i2c_device_id *id)
 {
 	int ret;
 	struct sht3x_data *data;
@@ -705,18 +732,11 @@ static int sht3x_probe(struct i2c_client *client)
 	mutex_init(&data->i2c_lock);
 	mutex_init(&data->data_lock);
 
-	/*
-	 * An attempt to read limits register too early
-	 * causes a NACK response from the chip.
-	 * Waiting for an empirical delay of 500 us solves the issue.
-	 */
-	usleep_range(500, 600);
-
 	ret = limits_update(data);
 	if (ret)
 		return ret;
 
-	if (i2c_match_id(sht3x_ids, client)->driver_data == sts3x)
+	if (id->driver_data == sts3x)
 		attribute_groups = sts3x_groups;
 	else
 		attribute_groups = sht3x_groups;
@@ -743,7 +763,7 @@ MODULE_DEVICE_TABLE(i2c, sht3x_ids);
 
 static struct i2c_driver sht3x_i2c_driver = {
 	.driver.name = "sht3x",
-	.probe_new   = sht3x_probe,
+	.probe       = sht3x_probe,
 	.id_table    = sht3x_ids,
 };
 

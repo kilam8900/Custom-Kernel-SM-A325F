@@ -31,12 +31,10 @@
 #include <linux/ratelimit.h>
 #include <linux/export.h>
 
-#include <drm/drm_file.h>
-#include <drm/drm_print.h>
-
-#include "drm_crtc_internal.h"
-#include "drm_internal.h"
+#include <drm/drmP.h>
 #include "drm_legacy.h"
+#include "drm_internal.h"
+#include "drm_crtc_internal.h"
 
 #define DRM_IOCTL_VERSION32		DRM_IOWR(0x00, drm_version32_t)
 #define DRM_IOCTL_GET_UNIQUE32		DRM_IOWR(0x01, drm_unique32_t)
@@ -98,8 +96,6 @@ static int compat_drm_version(struct file *file, unsigned int cmd,
 	if (copy_from_user(&v32, (void __user *)arg, sizeof(v32)))
 		return -EFAULT;
 
-	memset(&v, 0, sizeof(v));
-
 	v = (struct drm_version) {
 		.name_len = v32.name_len,
 		.name = compat_ptr(v32.name),
@@ -109,7 +105,7 @@ static int compat_drm_version(struct file *file, unsigned int cmd,
 		.desc = compat_ptr(v32.desc),
 	};
 	err = drm_ioctl_kernel(file, drm_version, &v,
-			       DRM_RENDER_ALLOW);
+			DRM_UNLOCKED|DRM_RENDER_ALLOW|DRM_CONTROL_ALLOW);
 	if (err)
 		return err;
 
@@ -138,15 +134,12 @@ static int compat_drm_getunique(struct file *file, unsigned int cmd,
 
 	if (copy_from_user(&uq32, (void __user *)arg, sizeof(uq32)))
 		return -EFAULT;
-
-	memset(&uq, 0, sizeof(uq));
-
 	uq = (struct drm_unique){
 		.unique_len = uq32.unique_len,
 		.unique = compat_ptr(uq32.unique),
 	};
 
-	err = drm_ioctl_kernel(file, drm_getunique, &uq, 0);
+	err = drm_ioctl_kernel(file, drm_getunique, &uq, DRM_UNLOCKED);
 	if (err)
 		return err;
 
@@ -163,7 +156,6 @@ static int compat_drm_setunique(struct file *file, unsigned int cmd,
 	return -EINVAL;
 }
 
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
 typedef struct drm_map32 {
 	u32 offset;		/* Requested physical address (0 for SAREA) */
 	u32 size;		/* Requested physical size (bytes) */
@@ -185,7 +177,7 @@ static int compat_drm_getmap(struct file *file, unsigned int cmd,
 		return -EFAULT;
 
 	map.offset = m32.offset;
-	err = drm_ioctl_kernel(file, drm_legacy_getmap_ioctl, &map, 0);
+	err = drm_ioctl_kernel(file, drm_legacy_getmap_ioctl, &map, DRM_UNLOCKED);
 	if (err)
 		return err;
 
@@ -193,7 +185,7 @@ static int compat_drm_getmap(struct file *file, unsigned int cmd,
 	m32.size = map.size;
 	m32.type = map.type;
 	m32.flags = map.flags;
-	m32.handle = ptr_to_compat((void __user *)map.handle);
+	m32.handle = ptr_to_compat(map.handle);
 	m32.mtrr = map.mtrr;
 	if (copy_to_user(argp, &m32, sizeof(m32)))
 		return -EFAULT;
@@ -224,7 +216,7 @@ static int compat_drm_addmap(struct file *file, unsigned int cmd,
 
 	m32.offset = map.offset;
 	m32.mtrr = map.mtrr;
-	m32.handle = ptr_to_compat((void __user *)map.handle);
+	m32.handle = ptr_to_compat(map.handle);
 	if (map.handle != compat_ptr(m32.handle))
 		pr_err_ratelimited("compat_drm_addmap truncated handle %p for type %d offset %x\n",
 				   map.handle, m32.type, m32.offset);
@@ -247,7 +239,6 @@ static int compat_drm_rmmap(struct file *file, unsigned int cmd,
 	map.handle = compat_ptr(handle);
 	return drm_ioctl_kernel(file, drm_legacy_rmmap_ioctl, &map, DRM_AUTH);
 }
-#endif
 
 typedef struct drm_client32 {
 	int idx;	/* Which client desired? */
@@ -269,11 +260,9 @@ static int compat_drm_getclient(struct file *file, unsigned int cmd,
 	if (copy_from_user(&c32, argp, sizeof(c32)))
 		return -EFAULT;
 
-	memset(&client, 0, sizeof(client));
-
 	client.idx = c32.idx;
 
-	err = drm_ioctl_kernel(file, drm_getclient, &client, 0);
+	err = drm_ioctl_kernel(file, drm_getclient, &client, DRM_UNLOCKED);
 	if (err)
 		return err;
 
@@ -301,14 +290,17 @@ static int compat_drm_getstats(struct file *file, unsigned int cmd,
 			       unsigned long arg)
 {
 	drm_stats32_t __user *argp = (void __user *)arg;
+	int err;
 
-	/* getstats is defunct, just clear */
+	err = drm_ioctl_kernel(file, drm_noop, NULL, DRM_UNLOCKED);
+	if (err)
+		return err;
+
 	if (clear_user(argp, sizeof(drm_stats32_t)))
 		return -EFAULT;
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
 typedef struct drm_buf_desc32 {
 	int count;		 /* Number of buffers of this size */
 	int size;		 /* Size in bytes */
@@ -390,7 +382,6 @@ static int drm_legacy_infobufs32(struct drm_device *dev, void *data,
 			struct drm_file *file_priv)
 {
 	drm_buf_info32_t *request = data;
-
 	return __drm_legacy_infobufs(dev, data, &request->count, copy_one_buf32);
 }
 
@@ -538,7 +529,7 @@ static int compat_drm_getsareactx(struct file *file, unsigned int cmd,
 	if (err)
 		return err;
 
-	req32.handle = ptr_to_compat((void __user *)req.handle);
+	req32.handle = ptr_to_compat(req.handle);
 	if (copy_to_user(argp, &req32, sizeof(req32)))
 		return -EFAULT;
 
@@ -616,9 +607,7 @@ static int compat_drm_dma(struct file *file, unsigned int cmd,
 
 	return 0;
 }
-#endif
 
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
 #if IS_ENABLED(CONFIG_AGP)
 typedef struct drm_agp_mode32 {
 	u32 mode;	/**< AGP mode */
@@ -633,7 +622,7 @@ static int compat_drm_agp_enable(struct file *file, unsigned int cmd,
 	if (get_user(mode.mode, &argp->mode))
 		return -EFAULT;
 
-	return drm_ioctl_kernel(file,  drm_legacy_agp_enable_ioctl, &mode,
+	return drm_ioctl_kernel(file,  drm_agp_enable_ioctl, &mode,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 }
 
@@ -659,7 +648,7 @@ static int compat_drm_agp_info(struct file *file, unsigned int cmd,
 	struct drm_agp_info info;
 	int err;
 
-	err = drm_ioctl_kernel(file, drm_legacy_agp_info_ioctl, &info, DRM_AUTH);
+	err = drm_ioctl_kernel(file, drm_agp_info_ioctl, &info, DRM_AUTH);
 	if (err)
 		return err;
 
@@ -698,7 +687,7 @@ static int compat_drm_agp_alloc(struct file *file, unsigned int cmd,
 
 	request.size = req32.size;
 	request.type = req32.type;
-	err = drm_ioctl_kernel(file, drm_legacy_agp_alloc_ioctl, &request,
+	err = drm_ioctl_kernel(file, drm_agp_alloc_ioctl, &request,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 	if (err)
 		return err;
@@ -706,7 +695,7 @@ static int compat_drm_agp_alloc(struct file *file, unsigned int cmd,
 	req32.handle = request.handle;
 	req32.physical = request.physical;
 	if (copy_to_user(argp, &req32, sizeof(req32))) {
-		drm_ioctl_kernel(file, drm_legacy_agp_free_ioctl, &request,
+		drm_ioctl_kernel(file, drm_agp_free_ioctl, &request,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 		return -EFAULT;
 	}
@@ -723,7 +712,7 @@ static int compat_drm_agp_free(struct file *file, unsigned int cmd,
 	if (get_user(request.handle, &argp->handle))
 		return -EFAULT;
 
-	return drm_ioctl_kernel(file, drm_legacy_agp_free_ioctl, &request,
+	return drm_ioctl_kernel(file, drm_agp_free_ioctl, &request,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 }
 
@@ -744,7 +733,7 @@ static int compat_drm_agp_bind(struct file *file, unsigned int cmd,
 
 	request.handle = req32.handle;
 	request.offset = req32.offset;
-	return drm_ioctl_kernel(file, drm_legacy_agp_bind_ioctl, &request,
+	return drm_ioctl_kernel(file, drm_agp_bind_ioctl, &request,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 }
 
@@ -757,7 +746,7 @@ static int compat_drm_agp_unbind(struct file *file, unsigned int cmd,
 	if (get_user(request.handle, &argp->handle))
 		return -EFAULT;
 
-	return drm_ioctl_kernel(file, drm_legacy_agp_unbind_ioctl, &request,
+	return drm_ioctl_kernel(file, drm_agp_unbind_ioctl, &request,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 }
 #endif /* CONFIG_AGP */
@@ -802,7 +791,7 @@ static int compat_drm_sg_free(struct file *file, unsigned int cmd,
 	return drm_ioctl_kernel(file, drm_legacy_sg_free, &request,
 				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 }
-#endif
+
 #if defined(CONFIG_X86)
 typedef struct drm_update_draw32 {
 	drm_drawable_t handle;
@@ -815,8 +804,12 @@ typedef struct drm_update_draw32 {
 static int compat_drm_update_draw(struct file *file, unsigned int cmd,
 				  unsigned long arg)
 {
-	/* update_draw is defunct */
-	return 0;
+	drm_update_draw32_t update32;
+	if (copy_from_user(&update32, (void __user *)arg, sizeof(update32)))
+		return -EFAULT;
+
+	return drm_ioctl_kernel(file, drm_noop, NULL,
+				DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY);
 }
 #endif
 
@@ -849,12 +842,12 @@ static int compat_drm_wait_vblank(struct file *file, unsigned int cmd,
 	if (copy_from_user(&req32, argp, sizeof(req32)))
 		return -EFAULT;
 
-	memset(&req, 0, sizeof(req));
-
 	req.request.type = req32.request.type;
 	req.request.sequence = req32.request.sequence;
 	req.request.signal = req32.request.signal;
 	err = drm_ioctl_kernel(file, drm_wait_vblank_ioctl, &req, DRM_UNLOCKED);
+	if (err)
+		return err;
 
 	req32.reply.type = req.reply.type;
 	req32.reply.sequence = req.reply.sequence;
@@ -863,7 +856,7 @@ static int compat_drm_wait_vblank(struct file *file, unsigned int cmd,
 	if (copy_to_user(argp, &req32, sizeof(req32)))
 		return -EFAULT;
 
-	return err;
+	return 0;
 }
 
 #if defined(CONFIG_X86)
@@ -886,8 +879,6 @@ static int compat_drm_mode_addfb2(struct file *file, unsigned int cmd,
 	struct drm_mode_fb_cmd2 req64;
 	int err;
 
-	memset(&req64, 0, sizeof(req64));
-
 	if (copy_from_user(&req64, argp,
 			   offsetof(drm_mode_fb_cmd232_t, modifier)))
 		return -EFAULT;
@@ -896,7 +887,8 @@ static int compat_drm_mode_addfb2(struct file *file, unsigned int cmd,
 			   sizeof(req64.modifier)))
 		return -EFAULT;
 
-	err = drm_ioctl_kernel(file, drm_mode_addfb2, &req64, 0);
+	err = drm_ioctl_kernel(file, drm_mode_addfb2, &req64,
+				DRM_CONTROL_ALLOW|DRM_UNLOCKED);
 	if (err)
 		return err;
 
@@ -914,13 +906,10 @@ static struct {
 #define DRM_IOCTL32_DEF(n, f) [DRM_IOCTL_NR(n##32)] = {.fn = f, .name = #n}
 	DRM_IOCTL32_DEF(DRM_IOCTL_VERSION, compat_drm_version),
 	DRM_IOCTL32_DEF(DRM_IOCTL_GET_UNIQUE, compat_drm_getunique),
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
 	DRM_IOCTL32_DEF(DRM_IOCTL_GET_MAP, compat_drm_getmap),
-#endif
 	DRM_IOCTL32_DEF(DRM_IOCTL_GET_CLIENT, compat_drm_getclient),
 	DRM_IOCTL32_DEF(DRM_IOCTL_GET_STATS, compat_drm_getstats),
 	DRM_IOCTL32_DEF(DRM_IOCTL_SET_UNIQUE, compat_drm_setunique),
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
 	DRM_IOCTL32_DEF(DRM_IOCTL_ADD_MAP, compat_drm_addmap),
 	DRM_IOCTL32_DEF(DRM_IOCTL_ADD_BUFS, compat_drm_addbufs),
 	DRM_IOCTL32_DEF(DRM_IOCTL_MARK_BUFS, compat_drm_markbufs),
@@ -940,11 +929,8 @@ static struct {
 	DRM_IOCTL32_DEF(DRM_IOCTL_AGP_BIND, compat_drm_agp_bind),
 	DRM_IOCTL32_DEF(DRM_IOCTL_AGP_UNBIND, compat_drm_agp_unbind),
 #endif
-#endif
-#if IS_ENABLED(CONFIG_DRM_LEGACY)
 	DRM_IOCTL32_DEF(DRM_IOCTL_SG_ALLOC, compat_drm_sg_alloc),
 	DRM_IOCTL32_DEF(DRM_IOCTL_SG_FREE, compat_drm_sg_free),
-#endif
 #if defined(CONFIG_X86) || defined(CONFIG_IA64)
 	DRM_IOCTL32_DEF(DRM_IOCTL_UPDATE_DRAW, compat_drm_update_draw),
 #endif
@@ -972,7 +958,6 @@ long drm_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	unsigned int nr = DRM_IOCTL_NR(cmd);
 	struct drm_file *file_priv = filp->private_data;
-	struct drm_device *dev = file_priv->minor->dev;
 	drm_ioctl_compat_t *fn;
 	int ret;
 
@@ -980,6 +965,9 @@ long drm_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	 * work.  This may not always be a good assumption, but it's better
 	 * than always failing.
 	 */
+#ifdef CONFIG_MTK_HDMI_SUPPORT
+	file_priv->authenticated = 1;
+#endif
 	if (nr >= ARRAY_SIZE(drm_compat_ioctls))
 		return drm_ioctl(filp, cmd, arg);
 
@@ -987,14 +975,14 @@ long drm_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	if (!fn)
 		return drm_ioctl(filp, cmd, arg);
 
-	drm_dbg_core(dev, "comm=\"%s\", pid=%d, dev=0x%lx, auth=%d, %s\n",
-		     current->comm, task_pid_nr(current),
-		     (long)old_encode_dev(file_priv->minor->kdev->devt),
-		     file_priv->authenticated,
-		     drm_compat_ioctls[nr].name);
+	DRM_DEBUG("pid=%d, dev=0x%lx, auth=%d, %s\n",
+		  task_pid_nr(current),
+		  (long)old_encode_dev(file_priv->minor->kdev->devt),
+		  file_priv->authenticated,
+		  drm_compat_ioctls[nr].name);
 	ret = (*fn)(filp, cmd, arg);
 	if (ret)
-		drm_dbg_core(dev, "ret = %d\n", ret);
+		DRM_DEBUG("ret = %d\n", ret);
 	return ret;
 }
 EXPORT_SYMBOL(drm_compat_ioctl);

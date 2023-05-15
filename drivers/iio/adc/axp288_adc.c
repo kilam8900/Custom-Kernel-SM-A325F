@@ -1,15 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * axp288_adc.c - X-Powers AXP288 PMIC ADC Driver
  *
  * Copyright (C) 2014 Intel Corporation
  *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.	See the GNU
+ * General Public License for more details.
+ *
  */
 
 #include <linux/dmi.h>
 #include <linux/module.h>
-#include <linux/mutex.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/regmap.h>
@@ -51,8 +59,6 @@ enum axp288_adc_id {
 struct axp288_adc_info {
 	int irq;
 	struct regmap *regmap;
-	/* lock to protect against multiple access to the device */
-	struct mutex lock;
 	bool ts_enabled;
 };
 
@@ -102,14 +108,22 @@ static const struct iio_chan_spec axp288_adc_channels[] = {
 	},
 };
 
+#define AXP288_ADC_MAP(_adc_channel_label, _consumer_dev_name,	\
+		_consumer_channel)				\
+	{							\
+		.adc_channel_label = _adc_channel_label,	\
+		.consumer_dev_name = _consumer_dev_name,	\
+		.consumer_channel = _consumer_channel,		\
+	}
+
 /* for consumer drivers */
 static struct iio_map axp288_adc_default_maps[] = {
-	IIO_MAP("TS_PIN", "axp288-batt", "axp288-batt-temp"),
-	IIO_MAP("PMIC_TEMP", "axp288-pmic", "axp288-pmic-temp"),
-	IIO_MAP("GPADC", "axp288-gpadc", "axp288-system-temp"),
-	IIO_MAP("BATT_CHG_I", "axp288-chrg", "axp288-chrg-curr"),
-	IIO_MAP("BATT_DISCHRG_I", "axp288-chrg", "axp288-chrg-d-curr"),
-	IIO_MAP("BATT_V", "axp288-batt", "axp288-batt-volt"),
+	AXP288_ADC_MAP("TS_PIN", "axp288-batt", "axp288-batt-temp"),
+	AXP288_ADC_MAP("PMIC_TEMP", "axp288-pmic", "axp288-pmic-temp"),
+	AXP288_ADC_MAP("GPADC", "axp288-gpadc", "axp288-system-temp"),
+	AXP288_ADC_MAP("BATT_CHG_I", "axp288-chrg", "axp288-chrg-curr"),
+	AXP288_ADC_MAP("BATT_DISCHRG_I", "axp288-chrg", "axp288-chrg-d-curr"),
+	AXP288_ADC_MAP("BATT_V", "axp288-batt", "axp288-batt-volt"),
 	{},
 };
 
@@ -164,7 +178,7 @@ static int axp288_adc_read_raw(struct iio_dev *indio_dev,
 	int ret;
 	struct axp288_adc_info *info = iio_priv(indio_dev);
 
-	mutex_lock(&info->lock);
+	mutex_lock(&indio_dev->mlock);
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
 		if (axp288_adc_set_ts(info, AXP288_ADC_TS_CURRENT_ON_ONDEMAND,
@@ -181,7 +195,7 @@ static int axp288_adc_read_raw(struct iio_dev *indio_dev,
 	default:
 		ret = -EINVAL;
 	}
-	mutex_unlock(&info->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
 }
@@ -196,14 +210,6 @@ static const struct dmi_system_id axp288_adc_ts_bias_override[] = {
 		.matches = {
 		  DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
 		  DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo ideapad 100S-11IBY"),
-		},
-		.driver_data = (void *)(uintptr_t)AXP288_ADC_TS_BIAS_80UA,
-	},
-	{
-		/* Nuvision Solo 10 Draw */
-		.matches = {
-		  DMI_MATCH(DMI_SYS_VENDOR, "TMAX"),
-		  DMI_MATCH(DMI_PRODUCT_NAME, "TM101W610L"),
 		},
 		.driver_data = (void *)(uintptr_t)AXP288_ADC_TS_BIAS_80UA,
 	},
@@ -253,6 +259,7 @@ static int axp288_adc_initialize(struct axp288_adc_info *info)
 
 static const struct iio_info axp288_adc_iio_info = {
 	.read_raw = &axp288_adc_read_raw,
+	.driver_module = THIS_MODULE,
 };
 
 static int axp288_adc_probe(struct platform_device *pdev)
@@ -268,9 +275,11 @@ static int axp288_adc_probe(struct platform_device *pdev)
 
 	info = iio_priv(indio_dev);
 	info->irq = platform_get_irq(pdev, 0);
-	if (info->irq < 0)
+	if (info->irq < 0) {
+		dev_err(&pdev->dev, "no irq resource?\n");
 		return info->irq;
-
+	}
+	platform_set_drvdata(pdev, indio_dev);
 	info->regmap = axp20x->regmap;
 	/*
 	 * Set ADC to enabled state at all time, including system suspend.
@@ -282,19 +291,37 @@ static int axp288_adc_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	indio_dev->dev.parent = &pdev->dev;
 	indio_dev->name = pdev->name;
 	indio_dev->channels = axp288_adc_channels;
 	indio_dev->num_channels = ARRAY_SIZE(axp288_adc_channels);
 	indio_dev->info = &axp288_adc_iio_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
-
-	ret = devm_iio_map_array_register(&pdev->dev, indio_dev, axp288_adc_default_maps);
+	ret = iio_map_array_register(indio_dev, axp288_adc_default_maps);
 	if (ret < 0)
 		return ret;
 
-	mutex_init(&info->lock);
+	ret = iio_device_register(indio_dev);
+	if (ret < 0) {
+		dev_err(&pdev->dev, "unable to register iio device\n");
+		goto err_array_unregister;
+	}
+	return 0;
 
-	return devm_iio_device_register(&pdev->dev, indio_dev);
+err_array_unregister:
+	iio_map_array_unregister(indio_dev);
+
+	return ret;
+}
+
+static int axp288_adc_remove(struct platform_device *pdev)
+{
+	struct iio_dev *indio_dev = platform_get_drvdata(pdev);
+
+	iio_device_unregister(indio_dev);
+	iio_map_array_unregister(indio_dev);
+
+	return 0;
 }
 
 static const struct platform_device_id axp288_adc_id_table[] = {
@@ -304,6 +331,7 @@ static const struct platform_device_id axp288_adc_id_table[] = {
 
 static struct platform_driver axp288_adc_driver = {
 	.probe = axp288_adc_probe,
+	.remove = axp288_adc_remove,
 	.id_table = axp288_adc_id_table,
 	.driver = {
 		.name = "axp288_adc",

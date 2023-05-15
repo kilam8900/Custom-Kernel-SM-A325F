@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * I2C driver for Maxim MAX8925
  *
  * Copyright (C) 2009 Marvell International Ltd.
  *	Haojian Zhuang <haojian.zhuang@marvell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -144,7 +147,8 @@ static int max8925_dt_init(struct device_node *np, struct device *dev,
 	return 0;
 }
 
-static int max8925_probe(struct i2c_client *client)
+static int max8925_probe(struct i2c_client *client,
+				   const struct i2c_device_id *id)
 {
 	struct max8925_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct max8925_chip *chip;
@@ -175,18 +179,18 @@ static int max8925_probe(struct i2c_client *client)
 	dev_set_drvdata(chip->dev, chip);
 	mutex_init(&chip->io_lock);
 
-	chip->rtc = i2c_new_dummy_device(chip->i2c->adapter, RTC_I2C_ADDR);
-	if (IS_ERR(chip->rtc)) {
+	chip->rtc = i2c_new_dummy(chip->i2c->adapter, RTC_I2C_ADDR);
+	if (!chip->rtc) {
 		dev_err(chip->dev, "Failed to allocate I2C device for RTC\n");
-		return PTR_ERR(chip->rtc);
+		return -ENODEV;
 	}
 	i2c_set_clientdata(chip->rtc, chip);
 
-	chip->adc = i2c_new_dummy_device(chip->i2c->adapter, ADC_I2C_ADDR);
-	if (IS_ERR(chip->adc)) {
+	chip->adc = i2c_new_dummy(chip->i2c->adapter, ADC_I2C_ADDR);
+	if (!chip->adc) {
 		dev_err(chip->dev, "Failed to allocate I2C device for ADC\n");
 		i2c_unregister_device(chip->rtc);
-		return PTR_ERR(chip->adc);
+		return -ENODEV;
 	}
 	i2c_set_clientdata(chip->adc, chip);
 
@@ -197,15 +201,17 @@ static int max8925_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void max8925_remove(struct i2c_client *client)
+static int max8925_remove(struct i2c_client *client)
 {
 	struct max8925_chip *chip = i2c_get_clientdata(client);
 
 	max8925_device_exit(chip);
 	i2c_unregister_device(chip->adc);
 	i2c_unregister_device(chip->rtc);
+	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
 static int max8925_suspend(struct device *dev)
 {
 	struct i2c_client *client = to_i2c_client(dev);
@@ -225,9 +231,9 @@ static int max8925_resume(struct device *dev)
 		disable_irq_wake(chip->core_irq);
 	return 0;
 }
+#endif
 
-static DEFINE_SIMPLE_DEV_PM_OPS(max8925_pm_ops,
-				max8925_suspend, max8925_resume);
+static SIMPLE_DEV_PM_OPS(max8925_pm_ops, max8925_suspend, max8925_resume);
 
 static const struct of_device_id max8925_dt_ids[] = {
 	{ .compatible = "maxim,max8925", },
@@ -237,10 +243,10 @@ static const struct of_device_id max8925_dt_ids[] = {
 static struct i2c_driver max8925_driver = {
 	.driver	= {
 		.name	= "max8925",
-		.pm     = pm_sleep_ptr(&max8925_pm_ops),
+		.pm     = &max8925_pm_ops,
 		.of_match_table = max8925_dt_ids,
 	},
-	.probe_new	= max8925_probe,
+	.probe		= max8925_probe,
 	.remove		= max8925_remove,
 	.id_table	= max8925_id_table,
 };

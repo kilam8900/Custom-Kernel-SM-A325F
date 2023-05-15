@@ -106,7 +106,8 @@ struct wmi *ath9k_init_wmi(struct ath9k_htc_priv *priv)
 	mutex_init(&wmi->multi_rmw_mutex);
 	init_completion(&wmi->cmd_wait);
 	INIT_LIST_HEAD(&wmi->pending_tx_events);
-	tasklet_setup(&wmi->wmi_event_tasklet, ath9k_wmi_event_tasklet);
+	tasklet_init(&wmi->wmi_event_tasklet, ath9k_wmi_event_tasklet,
+		     (unsigned long)wmi);
 
 	return wmi;
 }
@@ -120,7 +121,7 @@ void ath9k_stop_wmi(struct ath9k_htc_priv *priv)
 	mutex_unlock(&wmi->op_mutex);
 }
 
-void ath9k_destroy_wmi(struct ath9k_htc_priv *priv)
+void ath9k_destoy_wmi(struct ath9k_htc_priv *priv)
 {
 	kfree(priv->wmi);
 }
@@ -135,9 +136,9 @@ void ath9k_wmi_event_drain(struct ath9k_htc_priv *priv)
 	spin_unlock_irqrestore(&priv->wmi->wmi_lock, flags);
 }
 
-void ath9k_wmi_event_tasklet(struct tasklet_struct *t)
+void ath9k_wmi_event_tasklet(unsigned long data)
 {
-	struct wmi *wmi = from_tasklet(wmi, t, wmi_event_tasklet);
+	struct wmi *wmi = (struct wmi *)data;
 	struct ath9k_htc_priv *priv = wmi->drv_priv;
 	struct wmi_cmd_hdr *hdr;
 	void *wmi_event;
@@ -161,7 +162,7 @@ void ath9k_wmi_event_tasklet(struct tasklet_struct *t)
 
 		switch (cmd_id) {
 		case WMI_SWBA_EVENTID:
-			swba = wmi_event;
+			swba = (struct wmi_event_swba *) wmi_event;
 			ath9k_htc_swba(priv, swba);
 			break;
 		case WMI_FATAL_EVENTID:
@@ -169,10 +170,6 @@ void ath9k_wmi_event_tasklet(struct tasklet_struct *t)
 					     &wmi->drv_priv->fatal_work);
 			break;
 		case WMI_TXSTATUS_EVENTID:
-			/* Check if ath9k_tx_init() completed. */
-			if (!data_race(priv->tx.initialized))
-				break;
-
 			spin_lock_bh(&priv->tx.tx_lock);
 			if (priv->tx.flags & ATH9K_HTC_OP_TX_DRAIN) {
 				spin_unlock_bh(&priv->tx.tx_lock);
@@ -213,9 +210,8 @@ static void ath9k_wmi_rsp_callback(struct wmi *wmi, struct sk_buff *skb)
 static void ath9k_wmi_ctrl_rx(void *priv, struct sk_buff *skb,
 			      enum htc_endpoint_id epid)
 {
-	struct wmi *wmi = priv;
+	struct wmi *wmi = (struct wmi *) priv;
 	struct wmi_cmd_hdr *hdr;
-	unsigned long flags;
 	u16 cmd_id;
 
 	if (unlikely(wmi->stopped))
@@ -225,20 +221,20 @@ static void ath9k_wmi_ctrl_rx(void *priv, struct sk_buff *skb,
 	cmd_id = be16_to_cpu(hdr->command_id);
 
 	if (cmd_id & 0x1000) {
-		spin_lock_irqsave(&wmi->wmi_lock, flags);
+		spin_lock(&wmi->wmi_lock);
 		__skb_queue_tail(&wmi->wmi_event_queue, skb);
-		spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+		spin_unlock(&wmi->wmi_lock);
 		tasklet_schedule(&wmi->wmi_event_tasklet);
 		return;
 	}
 
 	/* Check if there has been a timeout. */
-	spin_lock_irqsave(&wmi->wmi_lock, flags);
+	spin_lock(&wmi->wmi_lock);
 	if (be16_to_cpu(hdr->seq_no) != wmi->last_seq_id) {
-		spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+		spin_unlock(&wmi->wmi_lock);
 		goto free_skb;
 	}
-	spin_unlock_irqrestore(&wmi->wmi_lock, flags);
+	spin_unlock(&wmi->wmi_lock);
 
 	/* WMI command response */
 	ath9k_wmi_rsp_callback(wmi, skb);
@@ -341,7 +337,6 @@ int ath9k_wmi_cmd(struct wmi *wmi, enum wmi_cmd_id cmd_id,
 	if (!time_left) {
 		ath_dbg(common, WMI, "Timeout waiting for WMI command: %s\n",
 			wmi_cmd_to_name(cmd_id));
-		wmi->last_seq_id = 0;
 		mutex_unlock(&wmi->op_mutex);
 		return -ETIMEDOUT;
 	}

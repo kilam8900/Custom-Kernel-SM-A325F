@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Cryptographic API.
  *
@@ -12,26 +11,32 @@
  * Copyright (c) Jean-Francois Dive <jef@linuxbe.org>
  * Copyright (c) Mathias Krause <minipli@googlemail.com>
  * Copyright (c) Chandramouli Narayanan <mouli@linux.intel.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ *
  */
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
 #include <crypto/internal/hash.h>
-#include <crypto/internal/simd.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
+#include <linux/cryptohash.h>
 #include <linux/types.h>
-#include <crypto/sha1.h>
+#include <crypto/sha.h>
 #include <crypto/sha1_base.h>
-#include <asm/simd.h>
+#include <asm/fpu/api.h>
 
 static int sha1_update(struct shash_desc *desc, const u8 *data,
 			     unsigned int len, sha1_block_fn *sha1_xform)
 {
 	struct sha1_state *sctx = shash_desc_ctx(desc);
 
-	if (!crypto_simd_usable() ||
+	if (!irq_fpu_usable() ||
 	    (sctx->count % SHA1_BLOCK_SIZE) + len < SHA1_BLOCK_SIZE)
 		return crypto_sha1_update(desc, data, len);
 
@@ -51,7 +56,7 @@ static int sha1_update(struct shash_desc *desc, const u8 *data,
 static int sha1_finup(struct shash_desc *desc, const u8 *data,
 		      unsigned int len, u8 *out, sha1_block_fn *sha1_xform)
 {
-	if (!crypto_simd_usable())
+	if (!irq_fpu_usable())
 		return crypto_sha1_finup(desc, data, len, out);
 
 	kernel_fpu_begin();
@@ -95,6 +100,7 @@ static struct shash_alg sha1_ssse3_alg = {
 		.cra_name	=	"sha1",
 		.cra_driver_name =	"sha1-ssse3",
 		.cra_priority	=	150,
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA1_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -113,6 +119,7 @@ static void unregister_sha1_ssse3(void)
 		crypto_unregister_shash(&sha1_ssse3_alg);
 }
 
+#ifdef CONFIG_AS_AVX
 asmlinkage void sha1_transform_avx(struct sha1_state *state,
 				   const u8 *data, int blocks);
 
@@ -144,6 +151,7 @@ static struct shash_alg sha1_avx_alg = {
 		.cra_name	=	"sha1",
 		.cra_driver_name =	"sha1-avx",
 		.cra_priority	=	160,
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA1_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -173,6 +181,13 @@ static void unregister_sha1_avx(void)
 		crypto_unregister_shash(&sha1_avx_alg);
 }
 
+#else  /* CONFIG_AS_AVX */
+static inline int register_sha1_avx(void) { return 0; }
+static inline void unregister_sha1_avx(void) { }
+#endif /* CONFIG_AS_AVX */
+
+
+#if defined(CONFIG_AS_AVX2) && (CONFIG_AS_AVX)
 #define SHA1_AVX2_BLOCK_OPTSIZE	4	/* optimal 4*64 bytes of SHA1 blocks */
 
 asmlinkage void sha1_transform_avx2(struct sha1_state *state,
@@ -226,6 +241,7 @@ static struct shash_alg sha1_avx2_alg = {
 		.cra_name	=	"sha1",
 		.cra_driver_name =	"sha1-avx2",
 		.cra_priority	=	170,
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA1_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -243,6 +259,11 @@ static void unregister_sha1_avx2(void)
 	if (avx2_usable())
 		crypto_unregister_shash(&sha1_avx2_alg);
 }
+
+#else
+static inline int register_sha1_avx2(void) { return 0; }
+static inline void unregister_sha1_avx2(void) { }
+#endif
 
 #ifdef CONFIG_AS_SHA1_NI
 asmlinkage void sha1_ni_transform(struct sha1_state *digest, const u8 *data,
@@ -276,6 +297,7 @@ static struct shash_alg sha1_ni_alg = {
 		.cra_name	=	"sha1",
 		.cra_driver_name =	"sha1-ni",
 		.cra_priority	=	250,
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA1_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}

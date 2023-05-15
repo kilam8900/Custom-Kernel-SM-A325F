@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Maxim MAX14656 / AL32 USB Charger Detector driver
  *
@@ -8,6 +7,11 @@
  * Components from Maxim AL32 Charger detection Driver for MX50 Yoshi Board
  * Copyright (C) Amazon Technologies Inc. All rights reserved.
  * Manish Lachwani (lachwani@lab126.com)
+ *
+ * This package is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 and
+ * only version 2 as published by the Free Software Foundation.
+ *
  */
 #include <linux/module.h>
 #include <linux/init.h>
@@ -15,10 +19,11 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
+#include <linux/gpio.h>
+#include <linux/of_gpio.h>
 #include <linux/of_device.h>
 #include <linux/workqueue.h>
 #include <linux/power_supply.h>
-#include <linux/devm-helpers.h>
 
 #define MAX14656_MANUFACTURER	"Maxim Integrated"
 #define MAX14656_NAME		"max14656"
@@ -138,9 +143,10 @@ static void max14656_irq_worker(struct work_struct *work)
 
 	u8 buf[REG_TOTAL_NUM];
 	u8 chg_type;
+	int ret = 0;
 
-	max14656_read_block_reg(chip->client, MAX14656_DEVICE_ID,
-				REG_TOTAL_NUM, buf);
+	ret = max14656_read_block_reg(chip->client, MAX14656_DEVICE_ID,
+				      REG_TOTAL_NUM, buf);
 
 	if ((buf[MAX14656_STATUS_1] & STATUS1_VB_VALID_MASK) &&
 		(buf[MAX14656_STATUS_1] & STATUS1_CHG_TYPE_MASK)) {
@@ -234,9 +240,18 @@ static enum power_supply_property max14656_battery_props[] = {
 	POWER_SUPPLY_PROP_MANUFACTURER,
 };
 
-static int max14656_probe(struct i2c_client *client)
+static void stop_irq_work(void *data)
 {
-	struct i2c_adapter *adapter = client->adapter;
+	struct max14656_chip *chip = data;
+
+	cancel_delayed_work_sync(&chip->irq_work);
+}
+
+
+static int max14656_probe(struct i2c_client *client,
+			  const struct i2c_device_id *id)
+{
+	struct i2c_adapter *adapter = to_i2c_adapter(client->dev.parent);
 	struct device *dev = &client->dev;
 	struct power_supply_config psy_cfg = {};
 	struct max14656_chip *chip;
@@ -278,10 +293,10 @@ static int max14656_probe(struct i2c_client *client)
 		return -EINVAL;
 	}
 
-	ret = devm_delayed_work_autocancel(dev, &chip->irq_work,
-					   max14656_irq_worker);
+	INIT_DELAYED_WORK(&chip->irq_work, max14656_irq_worker);
+	ret = devm_add_action(dev, stop_irq_work, chip);
 	if (ret) {
-		dev_err(dev, "devm_delayed_work_autocancel %d failed\n", ret);
+		dev_err(dev, "devm_add_action %d failed\n", ret);
 		return ret;
 	}
 
@@ -316,7 +331,7 @@ static struct i2c_driver max14656_i2c_driver = {
 		.name	= "max14656",
 		.of_match_table = max14656_match_table,
 	},
-	.probe_new	= max14656_probe,
+	.probe		= max14656_probe,
 	.id_table	= max14656_id,
 };
 module_i2c_driver(max14656_i2c_driver);

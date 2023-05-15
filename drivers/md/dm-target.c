@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2001 Sistina Software (UK) Limited
  *
@@ -11,12 +10,13 @@
 #include <linux/init.h>
 #include <linux/kmod.h>
 #include <linux/bio.h>
-#include <linux/dax.h>
 
 #define DM_MSG_PREFIX "target"
 
 static LIST_HEAD(_targets);
 static DECLARE_RWSEM(_lock);
+
+#define DM_MOD_NAME_SIZE 32
 
 static inline struct target_type *__find_target_type(const char *name)
 {
@@ -93,7 +93,6 @@ int dm_register_target(struct target_type *tt)
 	up_write(&_lock);
 	return rv;
 }
-EXPORT_SYMBOL(dm_register_target);
 
 void dm_unregister_target(struct target_type *tt)
 {
@@ -107,7 +106,6 @@ void dm_unregister_target(struct target_type *tt)
 
 	up_write(&_lock);
 }
-EXPORT_SYMBOL(dm_unregister_target);
 
 /*
  * io-err: always fails an io, useful for bringing
@@ -140,14 +138,12 @@ static int io_err_clone_and_map_rq(struct dm_target *ti, struct request *rq,
 	return DM_MAPIO_KILL;
 }
 
-static void io_err_release_clone_rq(struct request *clone,
-				    union map_info *map_context)
+static void io_err_release_clone_rq(struct request *clone)
 {
 }
 
 static long io_err_dax_direct_access(struct dm_target *ti, pgoff_t pgoff,
-		long nr_pages, enum dax_access_mode mode, void **kaddr,
-		pfn_t *pfn)
+		long nr_pages, void **kaddr, pfn_t *pfn)
 {
 	return -EIO;
 }
@@ -173,3 +169,6 @@ void dm_target_exit(void)
 {
 	dm_unregister_target(&error_target);
 }
+
+EXPORT_SYMBOL(dm_register_target);
+EXPORT_SYMBOL(dm_unregister_target);

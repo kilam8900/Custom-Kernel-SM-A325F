@@ -19,12 +19,6 @@
 
 #include "util.h"
 
-/*
- * The work queue is used to avoid the cost of synchronize_rcu in kern_unmount.
- */
-static void free_ipc(struct work_struct *unused);
-static DECLARE_WORK(free_ipc_work, free_ipc);
-
 static struct ucounts *inc_ipc_namespaces(struct user_namespace *ns)
 {
 	return inc_ucount(ns, current_euid(), UCOUNT_IPC_NAMESPACES);
@@ -43,21 +37,12 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 	int err;
 
 	err = -ENOSPC;
- again:
 	ucounts = inc_ipc_namespaces(user_ns);
-	if (!ucounts) {
-		/*
-		 * IPC namespaces are freed asynchronously, by free_ipc_work.
-		 * If frees were pending, flush_work will wait, and
-		 * return true. Fail the allocation if no frees are pending.
-		 */
-		if (flush_work(&free_ipc_work))
-			goto again;
+	if (!ucounts)
 		goto fail;
-	}
 
 	err = -ENOMEM;
-	ns = kzalloc(sizeof(struct ipc_namespace), GFP_KERNEL_ACCOUNT);
+	ns = kmalloc(sizeof(struct ipc_namespace), GFP_KERNEL);
 	if (ns == NULL)
 		goto fail_dec;
 
@@ -66,33 +51,32 @@ static struct ipc_namespace *create_ipc_ns(struct user_namespace *user_ns,
 		goto fail_free;
 	ns->ns.ops = &ipcns_operations;
 
-	refcount_set(&ns->ns.count, 1);
+	refcount_set(&ns->count, 1);
 	ns->user_ns = get_user_ns(user_ns);
 	ns->ucounts = ucounts;
 
-	err = mq_init_ns(ns);
+	err = sem_init_ns(ns);
 	if (err)
 		goto fail_put;
-
-	err = -ENOMEM;
-	if (!setup_mq_sysctls(ns))
-		goto fail_put;
-
-	if (!setup_ipc_sysctls(ns))
-		goto fail_mq;
-
 	err = msg_init_ns(ns);
 	if (err)
-		goto fail_put;
+		goto fail_destroy_sem;
+	err = shm_init_ns(ns);
+	if (err)
+		goto fail_destroy_msg;
 
-	sem_init_ns(ns);
-	shm_init_ns(ns);
+	err = mq_init_ns(ns);
+	if (err)
+		goto fail_destroy_shm;
 
 	return ns;
 
-fail_mq:
-	retire_mq_sysctls(ns);
-
+fail_destroy_shm:
+	shm_exit_ns(ns);
+fail_destroy_msg:
+	msg_exit_ns(ns);
+fail_destroy_sem:
+	sem_exit_ns(ns);
 fail_put:
 	put_user_ns(ns->user_ns);
 	ns_free_inum(&ns->ns);
@@ -145,38 +129,14 @@ void free_ipcs(struct ipc_namespace *ns, struct ipc_ids *ids,
 
 static void free_ipc_ns(struct ipc_namespace *ns)
 {
-	/*
-	 * Caller needs to wait for an RCU grace period to have passed
-	 * after making the mount point inaccessible to new accesses.
-	 */
-	mntput(ns->mq_mnt);
 	sem_exit_ns(ns);
 	msg_exit_ns(ns);
 	shm_exit_ns(ns);
-
-	retire_mq_sysctls(ns);
-	retire_ipc_sysctls(ns);
 
 	dec_ipc_namespaces(ns->ucounts);
 	put_user_ns(ns->user_ns);
 	ns_free_inum(&ns->ns);
 	kfree(ns);
-}
-
-static LLIST_HEAD(free_ipc_list);
-static void free_ipc(struct work_struct *unused)
-{
-	struct llist_node *node = llist_del_all(&free_ipc_list);
-	struct ipc_namespace *n, *t;
-
-	llist_for_each_entry_safe(n, t, node, mnt_llist)
-		mnt_make_shortterm(n->mq_mnt);
-
-	/* Wait for any last users to have gone away. */
-	synchronize_rcu();
-
-	llist_for_each_entry_safe(n, t, node, mnt_llist)
-		free_ipc_ns(n);
 }
 
 /*
@@ -197,12 +157,11 @@ static void free_ipc(struct work_struct *unused)
  */
 void put_ipc_ns(struct ipc_namespace *ns)
 {
-	if (refcount_dec_and_lock(&ns->ns.count, &mq_lock)) {
+	if (refcount_dec_and_lock(&ns->count, &mq_lock)) {
 		mq_clear_sbinfo(ns);
 		spin_unlock(&mq_lock);
-
-		if (llist_add(&ns->mnt_llist, &free_ipc_list))
-			schedule_work(&free_ipc_work);
+		mq_put_mnt(ns);
+		free_ipc_ns(ns);
 	}
 }
 
@@ -230,14 +189,15 @@ static void ipcns_put(struct ns_common *ns)
 	return put_ipc_ns(to_ipc_ns(ns));
 }
 
-static int ipcns_install(struct nsset *nsset, struct ns_common *new)
+static int ipcns_install(struct nsproxy *nsproxy, struct ns_common *new)
 {
-	struct nsproxy *nsproxy = nsset->nsproxy;
 	struct ipc_namespace *ns = to_ipc_ns(new);
 	if (!ns_capable(ns->user_ns, CAP_SYS_ADMIN) ||
-	    !ns_capable(nsset->cred->user_ns, CAP_SYS_ADMIN))
+	    !ns_capable(current_user_ns(), CAP_SYS_ADMIN))
 		return -EPERM;
 
+	/* Ditch state from the old ipc namespace */
+	exit_sem(current);
 	put_ipc_ns(nsproxy->ipc_ns);
 	nsproxy->ipc_ns = get_ipc_ns(ns);
 	return 0;

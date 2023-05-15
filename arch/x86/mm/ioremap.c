@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Re-map IO memory to kernel address space so that we can access it.
  * This is needed for high PCI addresses that aren't mapped in the
@@ -7,35 +6,26 @@
  * (C) Copyright 1995 1996 Linus Torvalds
  */
 
-#include <linux/memblock.h>
+#include <linux/bootmem.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mmiotrace.h>
-#include <linux/cc_platform.h>
+#include <linux/mem_encrypt.h>
 #include <linux/efi.h>
-#include <linux/pgtable.h>
-#include <linux/kmsan.h>
 
 #include <asm/set_memory.h>
 #include <asm/e820/api.h>
-#include <asm/efi.h>
 #include <asm/fixmap.h>
+#include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 #include <asm/pgalloc.h>
-#include <asm/memtype.h>
+#include <asm/pat.h>
 #include <asm/setup.h>
 
 #include "physaddr.h"
-
-/*
- * Descriptor controlling ioremap() behavior.
- */
-struct ioremap_desc {
-	unsigned int flags;
-};
 
 /*
  * Fix up the linear direct mapping of the kernel to avoid cache attribute
@@ -66,99 +56,17 @@ int ioremap_change_attr(unsigned long vaddr, unsigned long size,
 	return err;
 }
 
-/* Does the range (or a subset of) contain normal RAM? */
-static unsigned int __ioremap_check_ram(struct resource *res)
+static int __ioremap_check_ram(unsigned long start_pfn, unsigned long nr_pages,
+			       void *arg)
 {
-	unsigned long start_pfn, stop_pfn;
 	unsigned long i;
 
-	if ((res->flags & IORESOURCE_SYSTEM_RAM) != IORESOURCE_SYSTEM_RAM)
-		return 0;
-
-	start_pfn = (res->start + PAGE_SIZE - 1) >> PAGE_SHIFT;
-	stop_pfn = (res->end + 1) >> PAGE_SHIFT;
-	if (stop_pfn > start_pfn) {
-		for (i = 0; i < (stop_pfn - start_pfn); ++i)
-			if (pfn_valid(start_pfn + i) &&
-			    !PageReserved(pfn_to_page(start_pfn + i)))
-				return IORES_MAP_SYSTEM_RAM;
-	}
+	for (i = 0; i < nr_pages; ++i)
+		if (pfn_valid(start_pfn + i) &&
+		    !PageReserved(pfn_to_page(start_pfn + i)))
+			return 1;
 
 	return 0;
-}
-
-/*
- * In a SEV guest, NONE and RESERVED should not be mapped encrypted because
- * there the whole memory is already encrypted.
- */
-static unsigned int __ioremap_check_encrypted(struct resource *res)
-{
-	if (!cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
-		return 0;
-
-	switch (res->desc) {
-	case IORES_DESC_NONE:
-	case IORES_DESC_RESERVED:
-		break;
-	default:
-		return IORES_MAP_ENCRYPTED;
-	}
-
-	return 0;
-}
-
-/*
- * The EFI runtime services data area is not covered by walk_mem_res(), but must
- * be mapped encrypted when SEV is active.
- */
-static void __ioremap_check_other(resource_size_t addr, struct ioremap_desc *desc)
-{
-	if (!cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
-		return;
-
-	if (!IS_ENABLED(CONFIG_EFI))
-		return;
-
-	if (efi_mem_type(addr) == EFI_RUNTIME_SERVICES_DATA ||
-	    (efi_mem_type(addr) == EFI_BOOT_SERVICES_DATA &&
-	     efi_mem_attributes(addr) & EFI_MEMORY_RUNTIME))
-		desc->flags |= IORES_MAP_ENCRYPTED;
-}
-
-static int __ioremap_collect_map_flags(struct resource *res, void *arg)
-{
-	struct ioremap_desc *desc = arg;
-
-	if (!(desc->flags & IORES_MAP_SYSTEM_RAM))
-		desc->flags |= __ioremap_check_ram(res);
-
-	if (!(desc->flags & IORES_MAP_ENCRYPTED))
-		desc->flags |= __ioremap_check_encrypted(res);
-
-	return ((desc->flags & (IORES_MAP_SYSTEM_RAM | IORES_MAP_ENCRYPTED)) ==
-			       (IORES_MAP_SYSTEM_RAM | IORES_MAP_ENCRYPTED));
-}
-
-/*
- * To avoid multiple resource walks, this function walks resources marked as
- * IORESOURCE_MEM and IORESOURCE_BUSY and looking for system RAM and/or a
- * resource described not as IORES_DESC_NONE (e.g. IORES_DESC_ACPI_TABLES).
- *
- * After that, deal with misc other ranges in __ioremap_check_other() which do
- * not fall into the above category.
- */
-static void __ioremap_check_mem(resource_size_t addr, unsigned long size,
-				struct ioremap_desc *desc)
-{
-	u64 start, end;
-
-	start = (u64)addr;
-	end = start + size - 1;
-	memset(desc, 0, sizeof(struct ioremap_desc));
-
-	walk_mem_res(start, end, desc, __ioremap_collect_map_flags);
-
-	__ioremap_check_other(addr, desc);
 }
 
 /*
@@ -175,15 +83,13 @@ static void __ioremap_check_mem(resource_size_t addr, unsigned long size,
  * have to convert them into an offset in a page-aligned mapping, but the
  * caller shouldn't need to know that small detail.
  */
-static void __iomem *
-__ioremap_caller(resource_size_t phys_addr, unsigned long size,
-		 enum page_cache_mode pcm, void *caller, bool encrypted)
+static void __iomem *__ioremap_caller(resource_size_t phys_addr,
+		unsigned long size, enum page_cache_mode pcm, void *caller)
 {
 	unsigned long offset, vaddr;
-	resource_size_t last_addr;
+	resource_size_t pfn, last_pfn, last_addr;
 	const resource_size_t unaligned_phys_addr = phys_addr;
 	const unsigned long unaligned_size = size;
-	struct ioremap_desc io_desc;
 	struct vm_struct *area;
 	enum page_cache_mode new_pcm;
 	pgprot_t prot;
@@ -202,12 +108,13 @@ __ioremap_caller(resource_size_t phys_addr, unsigned long size,
 		return NULL;
 	}
 
-	__ioremap_check_mem(phys_addr, size, &io_desc);
-
 	/*
 	 * Don't allow anybody to remap normal RAM that we're using..
 	 */
-	if (io_desc.flags & IORES_MAP_SYSTEM_RAM) {
+	pfn      = phys_addr >> PAGE_SHIFT;
+	last_pfn = last_addr >> PAGE_SHIFT;
+	if (walk_system_ram_range(pfn, last_pfn - pfn + 1, NULL,
+					  __ioremap_check_ram) == 1) {
 		WARN_ONCE(1, "ioremap on RAM at %pa - %pa\n",
 			  &phys_addr, &last_addr);
 		return NULL;
@@ -217,19 +124,13 @@ __ioremap_caller(resource_size_t phys_addr, unsigned long size,
 	 * Mappings have to be page-aligned
 	 */
 	offset = phys_addr & ~PAGE_MASK;
-	phys_addr &= PAGE_MASK;
+	phys_addr &= PHYSICAL_PAGE_MASK;
 	size = PAGE_ALIGN(last_addr+1) - phys_addr;
 
-	/*
-	 * Mask out any bits not part of the actual physical
-	 * address, like memory encryption bits.
-	 */
-	phys_addr &= PHYSICAL_PAGE_MASK;
-
-	retval = memtype_reserve(phys_addr, (u64)phys_addr + size,
+	retval = reserve_memtype(phys_addr, (u64)phys_addr + size,
 						pcm, &new_pcm);
 	if (retval) {
-		printk(KERN_ERR "ioremap memtype_reserve failed %d\n", retval);
+		printk(KERN_ERR "ioremap reserve_memtype failed %d\n", retval);
 		return NULL;
 	}
 
@@ -245,20 +146,7 @@ __ioremap_caller(resource_size_t phys_addr, unsigned long size,
 		pcm = new_pcm;
 	}
 
-	/*
-	 * If the page being mapped is in memory and SEV is active then
-	 * make sure the memory encryption attribute is enabled in the
-	 * resulting mapping.
-	 * In TDX guests, memory is marked private by default. If encryption
-	 * is not requested (using encrypted), explicitly set decrypt
-	 * attribute in all IOREMAPPED memory.
-	 */
 	prot = PAGE_KERNEL_IO;
-	if ((io_desc.flags & IORES_MAP_ENCRYPTED) || encrypted)
-		prot = pgprot_encrypted(prot);
-	else
-		prot = pgprot_decrypted(prot);
-
 	switch (pcm) {
 	case _PAGE_CACHE_MODE_UC:
 	default:
@@ -290,7 +178,7 @@ __ioremap_caller(resource_size_t phys_addr, unsigned long size,
 	area->phys_addr = phys_addr;
 	vaddr = (unsigned long) area->addr;
 
-	if (memtype_kernel_map_sync(phys_addr, size, pcm))
+	if (kernel_map_sync_memtype(phys_addr, size, pcm))
 		goto err_free_area;
 
 	if (ioremap_page_range(vaddr, vaddr + size, phys_addr, prot))
@@ -310,16 +198,16 @@ __ioremap_caller(resource_size_t phys_addr, unsigned long size,
 err_free_area:
 	free_vm_area(area);
 err_free_memtype:
-	memtype_free(phys_addr, phys_addr + size);
+	free_memtype(phys_addr, phys_addr + size);
 	return NULL;
 }
 
 /**
- * ioremap     -   map bus memory into CPU space
+ * ioremap_nocache     -   map bus memory into CPU space
  * @phys_addr:    bus address of the memory
  * @size:      size of the resource to map
  *
- * ioremap performs a platform specific sequence of operations to
+ * ioremap_nocache performs a platform specific sequence of operations to
  * make bus memory CPU accessible via the readb/readw/readl/writeb/
  * writew/writel functions and the other mmio helpers. The returned
  * address is not guaranteed to be usable directly as a virtual
@@ -335,7 +223,7 @@ err_free_memtype:
  *
  * Must be freed with iounmap.
  */
-void __iomem *ioremap(resource_size_t phys_addr, unsigned long size)
+void __iomem *ioremap_nocache(resource_size_t phys_addr, unsigned long size)
 {
 	/*
 	 * Ideally, this should be:
@@ -348,9 +236,9 @@ void __iomem *ioremap(resource_size_t phys_addr, unsigned long size)
 	enum page_cache_mode pcm = _PAGE_CACHE_MODE_UC_MINUS;
 
 	return __ioremap_caller(phys_addr, size, pcm,
-				__builtin_return_address(0), false);
+				__builtin_return_address(0));
 }
-EXPORT_SYMBOL(ioremap);
+EXPORT_SYMBOL(ioremap_nocache);
 
 /**
  * ioremap_uc     -   map bus memory into CPU space as strongly uncachable
@@ -381,7 +269,7 @@ void __iomem *ioremap_uc(resource_size_t phys_addr, unsigned long size)
 	enum page_cache_mode pcm = _PAGE_CACHE_MODE_UC;
 
 	return __ioremap_caller(phys_addr, size, pcm,
-				__builtin_return_address(0), false);
+				__builtin_return_address(0));
 }
 EXPORT_SYMBOL_GPL(ioremap_uc);
 
@@ -398,7 +286,7 @@ EXPORT_SYMBOL_GPL(ioremap_uc);
 void __iomem *ioremap_wc(resource_size_t phys_addr, unsigned long size)
 {
 	return __ioremap_caller(phys_addr, size, _PAGE_CACHE_MODE_WC,
-					__builtin_return_address(0), false);
+					__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_wc);
 
@@ -415,21 +303,14 @@ EXPORT_SYMBOL(ioremap_wc);
 void __iomem *ioremap_wt(resource_size_t phys_addr, unsigned long size)
 {
 	return __ioremap_caller(phys_addr, size, _PAGE_CACHE_MODE_WT,
-					__builtin_return_address(0), false);
+					__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_wt);
-
-void __iomem *ioremap_encrypted(resource_size_t phys_addr, unsigned long size)
-{
-	return __ioremap_caller(phys_addr, size, _PAGE_CACHE_MODE_WB,
-				__builtin_return_address(0), true);
-}
-EXPORT_SYMBOL(ioremap_encrypted);
 
 void __iomem *ioremap_cache(resource_size_t phys_addr, unsigned long size)
 {
 	return __ioremap_caller(phys_addr, size, _PAGE_CACHE_MODE_WB,
-				__builtin_return_address(0), false);
+				__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_cache);
 
@@ -438,7 +319,7 @@ void __iomem *ioremap_prot(resource_size_t phys_addr, unsigned long size,
 {
 	return __ioremap_caller(phys_addr, size,
 				pgprot2cachemode(__pgprot(prot_val)),
-				__builtin_return_address(0), false);
+				__builtin_return_address(0));
 }
 EXPORT_SYMBOL(ioremap_prot);
 
@@ -486,9 +367,7 @@ void iounmap(volatile void __iomem *addr)
 		return;
 	}
 
-	kmsan_iounmap_page_range((unsigned long)addr,
-		(unsigned long)addr + get_vm_area_size(p));
-	memtype_free(p->phys_addr, p->phys_addr + get_vm_area_size(p));
+	free_memtype(p->phys_addr, p->phys_addr + get_vm_area_size(p));
 
 	/* Finally remove it */
 	o = remove_vm_area((void __force *)addr);
@@ -496,6 +375,20 @@ void iounmap(volatile void __iomem *addr)
 	kfree(p);
 }
 EXPORT_SYMBOL(iounmap);
+
+int __init arch_ioremap_pud_supported(void)
+{
+#ifdef CONFIG_X86_64
+	return boot_cpu_has(X86_FEATURE_GBPAGES);
+#else
+	return 0;
+#endif
+}
+
+int __init arch_ioremap_pmd_supported(void)
+{
+	return boot_cpu_has(X86_FEATURE_PSE);
+}
 
 /*
  * Convert a physical pointer to a virtual kernel pointer for /dev/mem
@@ -522,7 +415,6 @@ void unxlate_dev_mem_ptr(phys_addr_t phys, void *addr)
 	memunmap((void *)((unsigned long)addr & PAGE_MASK));
 }
 
-#ifdef CONFIG_AMD_MEM_ENCRYPT
 /*
  * Examine the physical address to determine if it is an area of memory
  * that should be mapped decrypted.  If the memory is not part of the
@@ -530,9 +422,6 @@ void unxlate_dev_mem_ptr(phys_addr_t phys, void *addr)
  * areas should be mapped decrypted. And since the encryption key can
  * change across reboots, persistent memory should also be mapped
  * decrypted.
- *
- * If SEV is active, that implies that BIOS/UEFI also ran encrypted so
- * only persistent memory should be mapped decrypted.
  */
 static bool memremap_should_map_decrypted(resource_size_t phys_addr,
 					  unsigned long size)
@@ -569,11 +458,6 @@ static bool memremap_should_map_decrypted(resource_size_t phys_addr,
 	case E820_TYPE_ACPI:
 	case E820_TYPE_NVS:
 	case E820_TYPE_UNUSABLE:
-		/* For SEV, these areas are encrypted */
-		if (cc_platform_has(CC_ATTR_GUEST_MEM_ENCRYPT))
-			break;
-		fallthrough;
-
 	case E820_TYPE_PRAM:
 		return true;
 	default:
@@ -629,7 +513,6 @@ static bool memremap_is_efi_data(resource_size_t phys_addr,
 static bool memremap_is_setup_data(resource_size_t phys_addr,
 				   unsigned long size)
 {
-	struct setup_indirect *indirect;
 	struct setup_data *data;
 	u64 paddr, paddr_next;
 
@@ -642,35 +525,9 @@ static bool memremap_is_setup_data(resource_size_t phys_addr,
 
 		data = memremap(paddr, sizeof(*data),
 				MEMREMAP_WB | MEMREMAP_DEC);
-		if (!data) {
-			pr_warn("failed to memremap setup_data entry\n");
-			return false;
-		}
 
 		paddr_next = data->next;
 		len = data->len;
-
-		if ((phys_addr > paddr) && (phys_addr < (paddr + len))) {
-			memunmap(data);
-			return true;
-		}
-
-		if (data->type == SETUP_INDIRECT) {
-			memunmap(data);
-			data = memremap(paddr, sizeof(*data) + len,
-					MEMREMAP_WB | MEMREMAP_DEC);
-			if (!data) {
-				pr_warn("failed to memremap indirect setup_data\n");
-				return false;
-			}
-
-			indirect = (struct setup_indirect *)data->data;
-
-			if (indirect->type != SETUP_INDIRECT) {
-				paddr = indirect->addr;
-				len = indirect->len;
-			}
-		}
 
 		memunmap(data);
 
@@ -690,51 +547,22 @@ static bool memremap_is_setup_data(resource_size_t phys_addr,
 static bool __init early_memremap_is_setup_data(resource_size_t phys_addr,
 						unsigned long size)
 {
-	struct setup_indirect *indirect;
 	struct setup_data *data;
 	u64 paddr, paddr_next;
 
 	paddr = boot_params.hdr.setup_data;
 	while (paddr) {
-		unsigned int len, size;
+		unsigned int len;
 
 		if (phys_addr == paddr)
 			return true;
 
 		data = early_memremap_decrypted(paddr, sizeof(*data));
-		if (!data) {
-			pr_warn("failed to early memremap setup_data entry\n");
-			return false;
-		}
-
-		size = sizeof(*data);
 
 		paddr_next = data->next;
 		len = data->len;
 
-		if ((phys_addr > paddr) && (phys_addr < (paddr + len))) {
-			early_memunmap(data, sizeof(*data));
-			return true;
-		}
-
-		if (data->type == SETUP_INDIRECT) {
-			size += len;
-			early_memunmap(data, sizeof(*data));
-			data = early_memremap_decrypted(paddr, size);
-			if (!data) {
-				pr_warn("failed to early memremap indirect setup_data\n");
-				return false;
-			}
-
-			indirect = (struct setup_indirect *)data->data;
-
-			if (indirect->type != SETUP_INDIRECT) {
-				paddr = indirect->addr;
-				len = indirect->len;
-			}
-		}
-
-		early_memunmap(data, size);
+		early_memunmap(data, sizeof(*data));
 
 		if ((phys_addr > paddr) && (phys_addr < (paddr + len)))
 			return true;
@@ -753,7 +581,7 @@ static bool __init early_memremap_is_setup_data(resource_size_t phys_addr,
 bool arch_memremap_can_ram_remap(resource_size_t phys_addr, unsigned long size,
 				 unsigned long flags)
 {
-	if (!cc_platform_has(CC_ATTR_MEM_ENCRYPT))
+	if (!sme_active())
 		return true;
 
 	if (flags & MEMREMAP_ENC)
@@ -762,13 +590,12 @@ bool arch_memremap_can_ram_remap(resource_size_t phys_addr, unsigned long size,
 	if (flags & MEMREMAP_DEC)
 		return false;
 
-	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
-		if (memremap_is_setup_data(phys_addr, size) ||
-		    memremap_is_efi_data(phys_addr, size))
-			return false;
-	}
+	if (memremap_is_setup_data(phys_addr, size) ||
+	    memremap_is_efi_data(phys_addr, size) ||
+	    memremap_should_map_decrypted(phys_addr, size))
+		return false;
 
-	return !memremap_should_map_decrypted(phys_addr, size);
+	return true;
 }
 
 /*
@@ -781,24 +608,17 @@ pgprot_t __init early_memremap_pgprot_adjust(resource_size_t phys_addr,
 					     unsigned long size,
 					     pgprot_t prot)
 {
-	bool encrypted_prot;
-
-	if (!cc_platform_has(CC_ATTR_MEM_ENCRYPT))
+	if (!sme_active())
 		return prot;
 
-	encrypted_prot = true;
+	if (early_memremap_is_setup_data(phys_addr, size) ||
+	    memremap_is_efi_data(phys_addr, size) ||
+	    memremap_should_map_decrypted(phys_addr, size))
+		prot = pgprot_decrypted(prot);
+	else
+		prot = pgprot_encrypted(prot);
 
-	if (cc_platform_has(CC_ATTR_HOST_MEM_ENCRYPT)) {
-		if (early_memremap_is_setup_data(phys_addr, size) ||
-		    memremap_is_efi_data(phys_addr, size))
-			encrypted_prot = false;
-	}
-
-	if (encrypted_prot && memremap_should_map_decrypted(phys_addr, size))
-		encrypted_prot = false;
-
-	return encrypted_prot ? pgprot_encrypted(prot)
-			      : pgprot_decrypted(prot);
+	return prot;
 }
 
 bool phys_mem_access_encrypted(unsigned long phys_addr, unsigned long size)
@@ -806,6 +626,7 @@ bool phys_mem_access_encrypted(unsigned long phys_addr, unsigned long size)
 	return arch_memremap_can_ram_remap(phys_addr, size, 0);
 }
 
+#ifdef CONFIG_ARCH_USE_MEMREMAP_PROT
 /* Remap memory with encryption */
 void __init *early_memremap_encrypted(resource_size_t phys_addr,
 				      unsigned long size)
@@ -820,8 +641,10 @@ void __init *early_memremap_encrypted(resource_size_t phys_addr,
 void __init *early_memremap_encrypted_wp(resource_size_t phys_addr,
 					 unsigned long size)
 {
-	if (!x86_has_pat_wp())
+	/* Be sure the write-protect PAT entry is set for write-protect */
+	if (__pte2cachemode_tbl[_PAGE_CACHE_MODE_WP] != _PAGE_CACHE_MODE_WP)
 		return NULL;
+
 	return early_memremap_prot(phys_addr, size, __PAGE_KERNEL_ENC_WP);
 }
 
@@ -839,11 +662,13 @@ void __init *early_memremap_decrypted(resource_size_t phys_addr,
 void __init *early_memremap_decrypted_wp(resource_size_t phys_addr,
 					 unsigned long size)
 {
-	if (!x86_has_pat_wp())
+	/* Be sure the write-protect PAT entry is set for write-protect */
+	if (__pte2cachemode_tbl[_PAGE_CACHE_MODE_WP] != _PAGE_CACHE_MODE_WP)
 		return NULL;
+
 	return early_memremap_prot(phys_addr, size, __PAGE_KERNEL_NOENC_WP);
 }
-#endif	/* CONFIG_AMD_MEM_ENCRYPT */
+#endif	/* CONFIG_ARCH_USE_MEMREMAP_PROT */
 
 static pte_t bm_pte[PAGE_SIZE/sizeof(pte_t)] __page_aligned_bss;
 
@@ -920,12 +745,9 @@ void __init __early_set_fixmap(enum fixed_addresses idx,
 	}
 	pte = early_ioremap_pte(addr);
 
-	/* Sanitize 'prot' against any unsupported bits: */
-	pgprot_val(flags) &= __supported_pte_mask;
-
 	if (pgprot_val(flags))
 		set_pte(pte, pfn_pte(phys >> PAGE_SHIFT, flags));
 	else
 		pte_clear(&init_mm, addr, pte);
-	flush_tlb_one_kernel(addr);
+	__flush_tlb_one_kernel(addr);
 }

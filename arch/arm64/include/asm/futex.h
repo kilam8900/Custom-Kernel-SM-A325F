@@ -1,9 +1,22 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 ARM Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef __ASM_FUTEX_H
 #define __ASM_FUTEX_H
+
+#ifdef __KERNEL__
 
 #include <linux/futex.h>
 #include <linux/uaccess.h>
@@ -16,7 +29,7 @@
 do {									\
 	unsigned int loops = FUTEX_MAX_LOOPS;				\
 									\
-	uaccess_enable_privileged();					\
+	uaccess_enable();						\
 	asm volatile(							\
 "	prfm	pstl1strm, %2\n"					\
 "1:	ldxr	%w1, %2\n"						\
@@ -25,16 +38,21 @@ do {									\
 "	cbz	%w0, 3f\n"						\
 "	sub	%w4, %w4, %w0\n"					\
 "	cbnz	%w4, 1b\n"						\
-"	mov	%w0, %w6\n"						\
+"	mov	%w0, %w7\n"						\
 "3:\n"									\
 "	dmb	ish\n"							\
-	_ASM_EXTABLE_UACCESS_ERR(1b, 3b, %w0)				\
-	_ASM_EXTABLE_UACCESS_ERR(2b, 3b, %w0)				\
+"	.pushsection .fixup,\"ax\"\n"					\
+"	.align	2\n"							\
+"4:	mov	%w0, %w6\n"						\
+"	b	3b\n"							\
+"	.popsection\n"							\
+	_ASM_EXTABLE(1b, 4b)						\
+	_ASM_EXTABLE(2b, 4b)						\
 	: "=&r" (ret), "=&r" (oldval), "+Q" (*uaddr), "=&r" (tmp),	\
 	  "+r" (loops)							\
-	: "r" (oparg), "Ir" (-EAGAIN)					\
+	: "r" (oparg), "Ir" (-EFAULT), "Ir" (-EAGAIN)			\
 	: "memory");							\
-	uaccess_disable_privileged();					\
+	uaccess_disable();						\
 } while (0)
 
 static inline int
@@ -43,8 +61,7 @@ arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *_uaddr)
 	int oldval = 0, ret, tmp;
 	u32 __user *uaddr = __uaccess_mask_ptr(_uaddr);
 
-	if (!access_ok(_uaddr, sizeof(u32)))
-		return -EFAULT;
+	pagefault_disable();
 
 	switch (op) {
 	case FUTEX_OP_SET:
@@ -71,6 +88,8 @@ arch_futex_atomic_op_inuser(int op, int oparg, int *oval, u32 __user *_uaddr)
 		ret = -ENOSYS;
 	}
 
+	pagefault_enable();
+
 	if (!ret)
 		*oval = oldval;
 
@@ -86,11 +105,11 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
 	u32 val, tmp;
 	u32 __user *uaddr;
 
-	if (!access_ok(_uaddr, sizeof(u32)))
+	if (!access_ok(VERIFY_WRITE, _uaddr, sizeof(u32)))
 		return -EFAULT;
 
 	uaddr = __uaccess_mask_ptr(_uaddr);
-	uaccess_enable_privileged();
+	uaccess_enable();
 	asm volatile("// futex_atomic_cmpxchg_inatomic\n"
 "	prfm	pstl1strm, %2\n"
 "1:	ldxr	%w1, %2\n"
@@ -100,16 +119,20 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
 "	cbz	%w3, 3f\n"
 "	sub	%w4, %w4, %w3\n"
 "	cbnz	%w4, 1b\n"
-"	mov	%w0, %w7\n"
+"	mov	%w0, %w8\n"
 "3:\n"
 "	dmb	ish\n"
 "4:\n"
-	_ASM_EXTABLE_UACCESS_ERR(1b, 4b, %w0)
-	_ASM_EXTABLE_UACCESS_ERR(2b, 4b, %w0)
+"	.pushsection .fixup,\"ax\"\n"
+"5:	mov	%w0, %w7\n"
+"	b	4b\n"
+"	.popsection\n"
+	_ASM_EXTABLE(1b, 5b)
+	_ASM_EXTABLE(2b, 5b)
 	: "+r" (ret), "=&r" (val), "+Q" (*uaddr), "=&r" (tmp), "+r" (loops)
-	: "r" (oldval), "r" (newval), "Ir" (-EAGAIN)
+	: "r" (oldval), "r" (newval), "Ir" (-EFAULT), "Ir" (-EAGAIN)
 	: "memory");
-	uaccess_disable_privileged();
+	uaccess_disable();
 
 	if (!ret)
 		*uval = val;
@@ -117,4 +140,5 @@ futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *_uaddr,
 	return ret;
 }
 
+#endif /* __KERNEL__ */
 #endif /* __ASM_FUTEX_H */

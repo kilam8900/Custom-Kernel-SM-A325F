@@ -18,22 +18,27 @@
  *  Vectors   0 ...  31 : system traps and exceptions - hardcoded events
  *  Vectors  32 ... 127 : device interrupts
  *  Vector  128         : legacy int80 syscall interface
- *  Vectors 129 ... LOCAL_TIMER_VECTOR-1
- *  Vectors LOCAL_TIMER_VECTOR ... 255 : special interrupts
+ *  Vectors 129 ... INVALIDATE_TLB_VECTOR_START-1 except 204 : device interrupts
+ *  Vectors INVALIDATE_TLB_VECTOR_START ... 255 : special interrupts
  *
  * 64-bit x86 has per CPU IDT tables, 32-bit has one shared IDT table.
  *
  * This file enumerates the exact layout of them:
  */
 
-/* This is used as an interrupt vector when programming the APIC. */
 #define NMI_VECTOR			0x02
+#define MCE_VECTOR			0x12
 
 /*
  * IDT vectors usable for external interrupt sources start at 0x20.
  * (0x80 is the syscall vector, 0x30-0x3f are for ISA)
  */
 #define FIRST_EXTERNAL_VECTOR		0x20
+/*
+ * We start allocating at 0x21 to spread out vectors evenly between
+ * priority levels. (0x80 is the syscall vector)
+ */
+#define VECTOR_OFFSET_START		1
 
 /*
  * Reserve the lowest usable vector (and hence lowest priority)  0x20 for
@@ -84,7 +89,7 @@
  */
 #define IRQ_WORK_VECTOR			0xf6
 
-/* 0xf5 - unused, was UV_BAU_MESSAGE */
+#define UV_BAU_MESSAGE			0xf5
 #define DEFERRED_ERROR_VECTOR		0xf4
 
 /* Vector on which hypervisor callbacks will be delivered */
@@ -97,14 +102,12 @@
 #define POSTED_INTR_NESTED_VECTOR	0xf0
 #endif
 
-#define MANAGED_IRQ_SHUTDOWN_VECTOR	0xef
-
-#if IS_ENABLED(CONFIG_HYPERV)
-#define HYPERV_REENLIGHTENMENT_VECTOR	0xee
-#define HYPERV_STIMER0_VECTOR		0xed
-#endif
-
-#define LOCAL_TIMER_VECTOR		0xec
+/*
+ * Local APIC timer IRQ vector is on a different priority level,
+ * to work around the 'lost local interrupt if more than 2 IRQ
+ * sources per level' errata.
+ */
+#define LOCAL_TIMER_VECTOR		0xef
 
 #define NR_VECTORS			 256
 
@@ -114,8 +117,7 @@
 #define FIRST_SYSTEM_VECTOR		NR_VECTORS
 #endif
 
-#define NR_EXTERNAL_VECTORS		(FIRST_SYSTEM_VECTOR - FIRST_EXTERNAL_VECTOR)
-#define NR_SYSTEM_VECTORS		(NR_VECTORS - FIRST_SYSTEM_VECTOR)
+#define FPU_IRQ				  13
 
 /*
  * Size the maximum number of interrupts.

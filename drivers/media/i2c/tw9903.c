@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2005-2006 Micronas USA Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License (Version 2) as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -189,7 +197,8 @@ static const struct v4l2_subdev_ops tw9903_ops = {
 
 /* --------------------------------------------------------------------------*/
 
-static int tw9903_probe(struct i2c_client *client)
+static int tw9903_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
 	struct tw9903 *dec;
 	struct v4l2_subdev *sd;
@@ -234,12 +243,13 @@ static int tw9903_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void tw9903_remove(struct i2c_client *client)
+static int tw9903_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&to_state(sd)->hdl);
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -254,7 +264,7 @@ static struct i2c_driver tw9903_driver = {
 	.driver = {
 		.name	= "tw9903",
 	},
-	.probe_new = tw9903_probe,
+	.probe = tw9903_probe,
 	.remove = tw9903_remove,
 	.id_table = tw9903_id,
 };

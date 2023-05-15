@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *	mxuport.c - MOXA UPort series driver
  *
  *	Copyright (c) 2006 Moxa Technologies Co., Ltd.
  *	Copyright (c) 2013 Andrew Lunn <andrew@lunn.ch>
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  *
  *	Supports the following Moxa USB to serial converters:
  *	 2 ports : UPort 1250, UPort 1250I
@@ -261,6 +265,13 @@ static int mxuport_send_ctrl_data_urb(struct usb_serial *serial,
 		return status;
 	}
 
+	if (status != size) {
+		dev_err(&serial->interface->dev,
+			"%s - short write (%d / %zd)\n",
+			__func__, status, size);
+		return -EIO;
+	}
+
 	return 0;
 }
 
@@ -320,14 +331,14 @@ static void mxuport_process_read_urb_data(struct usb_serial_port *port,
 {
 	int i;
 
-	if (port->sysrq) {
+	if (!port->port.console || !port->sysrq) {
+		tty_insert_flip_string(&port->port, data, size);
+	} else {
 		for (i = 0; i < size; i++, data++) {
 			if (!usb_serial_handle_sysrq_char(port, *data))
 				tty_insert_flip_char(&port->port, *data,
 						     TTY_NORMAL);
 		}
-	} else {
-		tty_insert_flip_string(&port->port, data, size);
 	}
 	tty_flip_buffer_push(&port->port);
 }
@@ -760,7 +771,7 @@ static int mxuport_tiocmget(struct tty_struct *tty)
 }
 
 static int mxuport_set_termios_flow(struct tty_struct *tty,
-				    const struct ktermios *old_termios,
+				    struct ktermios *old_termios,
 				    struct usb_serial_port *port,
 				    struct usb_serial *serial)
 {
@@ -834,7 +845,7 @@ out:
 
 static void mxuport_set_termios(struct tty_struct *tty,
 				struct usb_serial_port *port,
-				const struct ktermios *old_termios)
+				struct ktermios *old_termios)
 {
 	struct usb_serial *serial = port->serial;
 	u8 *buf;

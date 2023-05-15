@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * buffered writeback throttling. loosely based on CoDel. We can't drop
  * packets for IO scheduling, so the logic is something like this:
@@ -25,99 +24,10 @@
 #include <linux/backing-dev.h>
 #include <linux/swap.h>
 
-#include "blk-stat.h"
 #include "blk-wbt.h"
-#include "blk-rq-qos.h"
-#include "elevator.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/wbt.h>
-
-enum wbt_flags {
-	WBT_TRACKED		= 1,	/* write, tracked for throttling */
-	WBT_READ		= 2,	/* read */
-	WBT_KSWAPD		= 4,	/* write, from kswapd */
-	WBT_DISCARD		= 8,	/* discard */
-
-	WBT_NR_BITS		= 4,	/* number of bits */
-};
-
-enum {
-	WBT_RWQ_BG		= 0,
-	WBT_RWQ_KSWAPD,
-	WBT_RWQ_DISCARD,
-	WBT_NUM_RWQ,
-};
-
-/*
- * If current state is WBT_STATE_ON/OFF_DEFAULT, it can be covered to any other
- * state, if current state is WBT_STATE_ON/OFF_MANUAL, it can only be covered
- * to WBT_STATE_OFF/ON_MANUAL.
- */
-enum {
-	WBT_STATE_ON_DEFAULT	= 1,	/* on by default */
-	WBT_STATE_ON_MANUAL	= 2,	/* on manually by sysfs */
-	WBT_STATE_OFF_DEFAULT	= 3,	/* off by default */
-	WBT_STATE_OFF_MANUAL	= 4,	/* off manually by sysfs */
-};
-
-struct rq_wb {
-	/*
-	 * Settings that govern how we throttle
-	 */
-	unsigned int wb_background;		/* background writeback */
-	unsigned int wb_normal;			/* normal writeback */
-
-	short enable_state;			/* WBT_STATE_* */
-
-	/*
-	 * Number of consecutive periods where we don't have enough
-	 * information to make a firm scale up/down decision.
-	 */
-	unsigned int unknown_cnt;
-
-	u64 win_nsec;				/* default window size */
-	u64 cur_win_nsec;			/* current window size */
-
-	struct blk_stat_callback *cb;
-
-	u64 sync_issue;
-	void *sync_cookie;
-
-	unsigned int wc;
-
-	unsigned long last_issue;		/* last non-throttled issue */
-	unsigned long last_comp;		/* last non-throttled comp */
-	unsigned long min_lat_nsec;
-	struct rq_qos rqos;
-	struct rq_wait rq_wait[WBT_NUM_RWQ];
-	struct rq_depth rq_depth;
-};
-
-static inline struct rq_wb *RQWB(struct rq_qos *rqos)
-{
-	return container_of(rqos, struct rq_wb, rqos);
-}
-
-static inline void wbt_clear_state(struct request *rq)
-{
-	rq->wbt_flags = 0;
-}
-
-static inline enum wbt_flags wbt_flags(struct request *rq)
-{
-	return rq->wbt_flags;
-}
-
-static inline bool wbt_is_tracked(struct request *rq)
-{
-	return rq->wbt_flags & WBT_TRACKED;
-}
-
-static inline bool wbt_is_read(struct request *rq)
-{
-	return rq->wbt_flags & WBT_READ;
-}
 
 enum {
 	/*
@@ -145,8 +55,29 @@ enum {
 
 static inline bool rwb_enabled(struct rq_wb *rwb)
 {
-	return rwb && rwb->enable_state != WBT_STATE_OFF_DEFAULT &&
-		      rwb->wb_normal != 0;
+	return rwb && rwb->wb_normal != 0;
+}
+
+/*
+ * Increment 'v', if 'v' is below 'below'. Returns true if we succeeded,
+ * false if 'v' + 1 would be bigger than 'below'.
+ */
+static bool atomic_inc_below(atomic_t *v, int below)
+{
+	int cur = atomic_read(v);
+
+	for (;;) {
+		int old;
+
+		if (cur >= below)
+			return false;
+		old = atomic_cmpxchg(v, cur, cur + 1);
+		if (old == cur)
+			break;
+		cur = old;
+	}
+
+	return true;
 }
 
 static void wb_timestamp(struct rq_wb *rwb, unsigned long *var)
@@ -165,20 +96,14 @@ static void wb_timestamp(struct rq_wb *rwb, unsigned long *var)
  */
 static bool wb_recent_wait(struct rq_wb *rwb)
 {
-	struct bdi_writeback *wb = &rwb->rqos.disk->bdi->wb;
+	struct bdi_writeback *wb = &rwb->queue->backing_dev_info->wb;
 
 	return time_before(jiffies, wb->dirty_sleep + HZ);
 }
 
-static inline struct rq_wait *get_rq_wait(struct rq_wb *rwb,
-					  enum wbt_flags wb_acct)
+static inline struct rq_wait *get_rq_wait(struct rq_wb *rwb, bool is_kswapd)
 {
-	if (wb_acct & WBT_KSWAPD)
-		return &rwb->rq_wait[WBT_RWQ_KSWAPD];
-	else if (wb_acct & WBT_DISCARD)
-		return &rwb->rq_wait[WBT_RWQ_DISCARD];
-
-	return &rwb->rq_wait[WBT_RWQ_BG];
+	return &rwb->rq_wait[is_kswapd];
 }
 
 static void rwb_wake_all(struct rq_wb *rwb)
@@ -188,16 +113,20 @@ static void rwb_wake_all(struct rq_wb *rwb)
 	for (i = 0; i < WBT_NUM_RWQ; i++) {
 		struct rq_wait *rqw = &rwb->rq_wait[i];
 
-		if (wq_has_sleeper(&rqw->wait))
+		if (waitqueue_active(&rqw->wait))
 			wake_up_all(&rqw->wait);
 	}
 }
 
-static void wbt_rqw_done(struct rq_wb *rwb, struct rq_wait *rqw,
-			 enum wbt_flags wb_acct)
+void __wbt_done(struct rq_wb *rwb, enum wbt_flags wb_acct)
 {
+	struct rq_wait *rqw;
 	int inflight, limit;
 
+	if (!(wb_acct & WBT_TRACKED))
+		return;
+
+	rqw = get_rq_wait(rwb, wb_acct & WBT_KSWAPD);
 	inflight = atomic_dec_return(&rqw->inflight);
 
 	/*
@@ -210,13 +139,10 @@ static void wbt_rqw_done(struct rq_wb *rwb, struct rq_wait *rqw,
 	}
 
 	/*
-	 * For discards, our limit is always the background. For writes, if
-	 * the device does write back caching, drop further down before we
-	 * wake people up.
+	 * If the device does write back caching, drop further down
+	 * before we wake people up.
 	 */
-	if (wb_acct & WBT_DISCARD)
-		limit = rwb->wb_background;
-	else if (rwb->wc && !wb_recent_wait(rwb))
+	if (rwb->wc && !wb_recent_wait(rwb))
 		limit = 0;
 	else
 		limit = rwb->wb_normal;
@@ -227,7 +153,7 @@ static void wbt_rqw_done(struct rq_wb *rwb, struct rq_wait *rqw,
 	if (inflight && inflight >= limit)
 		return;
 
-	if (wq_has_sleeper(&rqw->wait)) {
+	if (waitqueue_active(&rqw->wait)) {
 		int diff = limit - inflight;
 
 		if (!inflight || diff >= rwb->wb_background / 2)
@@ -235,39 +161,90 @@ static void wbt_rqw_done(struct rq_wb *rwb, struct rq_wait *rqw,
 	}
 }
 
-static void __wbt_done(struct rq_qos *rqos, enum wbt_flags wb_acct)
-{
-	struct rq_wb *rwb = RQWB(rqos);
-	struct rq_wait *rqw;
-
-	if (!(wb_acct & WBT_TRACKED))
-		return;
-
-	rqw = get_rq_wait(rwb, wb_acct);
-	wbt_rqw_done(rwb, rqw, wb_acct);
-}
-
 /*
  * Called on completion of a request. Note that it's also called when
  * a request is merged, when the request gets freed.
  */
-static void wbt_done(struct rq_qos *rqos, struct request *rq)
+void wbt_done(struct rq_wb *rwb, struct blk_issue_stat *stat)
 {
-	struct rq_wb *rwb = RQWB(rqos);
+	if (!rwb)
+		return;
 
-	if (!wbt_is_tracked(rq)) {
-		if (rwb->sync_cookie == rq) {
+	if (!wbt_is_tracked(stat)) {
+		if (rwb->sync_cookie == stat) {
 			rwb->sync_issue = 0;
 			rwb->sync_cookie = NULL;
 		}
 
-		if (wbt_is_read(rq))
+		if (wbt_is_read(stat))
 			wb_timestamp(rwb, &rwb->last_comp);
+		wbt_clear_state(stat);
 	} else {
-		WARN_ON_ONCE(rq == rwb->sync_cookie);
-		__wbt_done(rqos, wbt_flags(rq));
+		WARN_ON_ONCE(stat == rwb->sync_cookie);
+		__wbt_done(rwb, wbt_stat_to_mask(stat));
+		wbt_clear_state(stat);
 	}
-	wbt_clear_state(rq);
+}
+
+/*
+ * Return true, if we can't increase the depth further by scaling
+ */
+static bool calc_wb_limits(struct rq_wb *rwb)
+{
+	unsigned int depth;
+	bool ret = false;
+
+	if (!rwb->min_lat_nsec) {
+		rwb->wb_max = rwb->wb_normal = rwb->wb_background = 0;
+		return false;
+	}
+
+	/*
+	 * For QD=1 devices, this is a special case. It's important for those
+	 * to have one request ready when one completes, so force a depth of
+	 * 2 for those devices. On the backend, it'll be a depth of 1 anyway,
+	 * since the device can't have more than that in flight. If we're
+	 * scaling down, then keep a setting of 1/1/1.
+	 */
+	if (rwb->queue_depth == 1) {
+		if (rwb->scale_step > 0)
+			rwb->wb_max = rwb->wb_normal = 1;
+		else {
+			rwb->wb_max = rwb->wb_normal = 2;
+			ret = true;
+		}
+		rwb->wb_background = 1;
+	} else {
+		/*
+		 * scale_step == 0 is our default state. If we have suffered
+		 * latency spikes, step will be > 0, and we shrink the
+		 * allowed write depths. If step is < 0, we're only doing
+		 * writes, and we allow a temporarily higher depth to
+		 * increase performance.
+		 */
+		depth = min_t(unsigned int, RWB_DEF_DEPTH, rwb->queue_depth);
+		if (rwb->scale_step > 0)
+			depth = 1 + ((depth - 1) >> min(31, rwb->scale_step));
+		else if (rwb->scale_step < 0) {
+			unsigned int maxd = 3 * rwb->queue_depth / 4;
+
+			depth = 1 + ((depth - 1) << -rwb->scale_step);
+			if (depth > maxd) {
+				depth = maxd;
+				ret = true;
+			}
+		}
+
+		/*
+		 * Set our max/normal/bg queue depths based on how far
+		 * we have scaled down (->scale_step).
+		 */
+		rwb->wb_max = depth;
+		rwb->wb_normal = (rwb->wb_max + 1) / 2;
+		rwb->wb_background = (rwb->wb_max + 3) / 4;
+	}
+
+	return ret;
 }
 
 static inline bool stat_sample_valid(struct blk_rq_stat *stat)
@@ -284,23 +261,13 @@ static inline bool stat_sample_valid(struct blk_rq_stat *stat)
 
 static u64 rwb_sync_issue_lat(struct rq_wb *rwb)
 {
-	u64 now, issue = READ_ONCE(rwb->sync_issue);
+	u64 now, issue = ACCESS_ONCE(rwb->sync_issue);
 
 	if (!issue || !rwb->sync_cookie)
 		return 0;
 
 	now = ktime_to_ns(ktime_get());
 	return now - issue;
-}
-
-static inline unsigned int wbt_inflight(struct rq_wb *rwb)
-{
-	unsigned int i, ret = 0;
-
-	for (i = 0; i < WBT_NUM_RWQ; i++)
-		ret += atomic_read(&rwb->rq_wait[i].inflight);
-
-	return ret;
 }
 
 enum {
@@ -312,8 +279,7 @@ enum {
 
 static int latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 {
-	struct backing_dev_info *bdi = rwb->rqos.disk->bdi;
-	struct rq_depth *rqd = &rwb->rq_depth;
+	struct backing_dev_info *bdi = rwb->queue->backing_dev_info;
 	u64 thislat;
 
 	/*
@@ -357,7 +323,7 @@ static int latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 		return LAT_EXCEEDED;
 	}
 
-	if (rqd->scale_step)
+	if (rwb->scale_step)
 		trace_wbt_stat(bdi, stat);
 
 	return LAT_OK;
@@ -365,50 +331,58 @@ static int latency_exceeded(struct rq_wb *rwb, struct blk_rq_stat *stat)
 
 static void rwb_trace_step(struct rq_wb *rwb, const char *msg)
 {
-	struct backing_dev_info *bdi = rwb->rqos.disk->bdi;
-	struct rq_depth *rqd = &rwb->rq_depth;
+	struct backing_dev_info *bdi = rwb->queue->backing_dev_info;
 
-	trace_wbt_step(bdi, msg, rqd->scale_step, rwb->cur_win_nsec,
-			rwb->wb_background, rwb->wb_normal, rqd->max_depth);
-}
-
-static void calc_wb_limits(struct rq_wb *rwb)
-{
-	if (rwb->min_lat_nsec == 0) {
-		rwb->wb_normal = rwb->wb_background = 0;
-	} else if (rwb->rq_depth.max_depth <= 2) {
-		rwb->wb_normal = rwb->rq_depth.max_depth;
-		rwb->wb_background = 1;
-	} else {
-		rwb->wb_normal = (rwb->rq_depth.max_depth + 1) / 2;
-		rwb->wb_background = (rwb->rq_depth.max_depth + 3) / 4;
-	}
+	trace_wbt_step(bdi, msg, rwb->scale_step, rwb->cur_win_nsec,
+			rwb->wb_background, rwb->wb_normal, rwb->wb_max);
 }
 
 static void scale_up(struct rq_wb *rwb)
 {
-	if (!rq_depth_scale_up(&rwb->rq_depth))
+	/*
+	 * Hit max in previous round, stop here
+	 */
+	if (rwb->scaled_max)
 		return;
-	calc_wb_limits(rwb);
+
+	rwb->scale_step--;
 	rwb->unknown_cnt = 0;
+
+	rwb->scaled_max = calc_wb_limits(rwb);
+
 	rwb_wake_all(rwb);
-	rwb_trace_step(rwb, tracepoint_string("scale up"));
+
+	rwb_trace_step(rwb, "step up");
 }
 
+/*
+ * Scale rwb down. If 'hard_throttle' is set, do it quicker, since we
+ * had a latency violation.
+ */
 static void scale_down(struct rq_wb *rwb, bool hard_throttle)
 {
-	if (!rq_depth_scale_down(&rwb->rq_depth, hard_throttle))
+	/*
+	 * Stop scaling down when we've hit the limit. This also prevents
+	 * ->scale_step from going to crazy values, if the device can't
+	 * keep up.
+	 */
+	if (rwb->wb_max == 1)
 		return;
-	calc_wb_limits(rwb);
+
+	if (rwb->scale_step < 0 && hard_throttle)
+		rwb->scale_step = 0;
+	else
+		rwb->scale_step++;
+
+	rwb->scaled_max = false;
 	rwb->unknown_cnt = 0;
-	rwb_trace_step(rwb, tracepoint_string("scale down"));
+	calc_wb_limits(rwb);
+	rwb_trace_step(rwb, "step down");
 }
 
 static void rwb_arm_timer(struct rq_wb *rwb)
 {
-	struct rq_depth *rqd = &rwb->rq_depth;
-
-	if (rqd->scale_step > 0) {
+	if (rwb->scale_step > 0) {
 		/*
 		 * We should speed this up, using some variant of a fast
 		 * integer inverse square root calculation. Since we only do
@@ -416,7 +390,7 @@ static void rwb_arm_timer(struct rq_wb *rwb)
 		 * though.
 		 */
 		rwb->cur_win_nsec = div_u64(rwb->win_nsec << 4,
-					int_sqrt((rqd->scale_step + 1) << 8));
+					int_sqrt((rwb->scale_step + 1) << 8));
 	} else {
 		/*
 		 * For step < 0, we don't want to increase/decrease the
@@ -431,16 +405,13 @@ static void rwb_arm_timer(struct rq_wb *rwb)
 static void wb_timer_fn(struct blk_stat_callback *cb)
 {
 	struct rq_wb *rwb = cb->data;
-	struct rq_depth *rqd = &rwb->rq_depth;
 	unsigned int inflight = wbt_inflight(rwb);
 	int status;
 
-	if (!rwb->rqos.disk)
-		return;
-
 	status = latency_exceeded(rwb, cb->stat);
 
-	trace_wbt_timer(rwb->rqos.disk->bdi, status, rqd->scale_step, inflight);
+	trace_wbt_timer(rwb->queue->backing_dev_info, status, rwb->scale_step,
+			inflight);
 
 	/*
 	 * If we exceeded the latency target, step down. If we did not,
@@ -470,9 +441,9 @@ static void wb_timer_fn(struct blk_stat_callback *cb)
 		 * currently don't have a valid read/write sample. For that
 		 * case, slowly return to center state (step == 0).
 		 */
-		if (rqd->scale_step > 0)
+		if (rwb->scale_step > 0)
 			scale_up(rwb);
-		else if (rqd->scale_step < 0)
+		else if (rwb->scale_step < 0)
 			scale_down(rwb, false);
 		break;
 	default:
@@ -482,54 +453,18 @@ static void wb_timer_fn(struct blk_stat_callback *cb)
 	/*
 	 * Re-arm timer, if we have IO in flight
 	 */
-	if (rqd->scale_step || inflight)
+	if (rwb->scale_step || inflight)
 		rwb_arm_timer(rwb);
 }
 
-static void wbt_update_limits(struct rq_wb *rwb)
+void wbt_update_limits(struct rq_wb *rwb)
 {
-	struct rq_depth *rqd = &rwb->rq_depth;
-
-	rqd->scale_step = 0;
-	rqd->scaled_max = false;
-
-	rq_depth_calc_max_depth(rqd);
+	rwb->scale_step = 0;
+	rwb->scaled_max = false;
 	calc_wb_limits(rwb);
 
 	rwb_wake_all(rwb);
 }
-
-bool wbt_disabled(struct request_queue *q)
-{
-	struct rq_qos *rqos = wbt_rq_qos(q);
-
-	return !rqos || RQWB(rqos)->enable_state == WBT_STATE_OFF_DEFAULT ||
-	       RQWB(rqos)->enable_state == WBT_STATE_OFF_MANUAL;
-}
-
-u64 wbt_get_min_lat(struct request_queue *q)
-{
-	struct rq_qos *rqos = wbt_rq_qos(q);
-	if (!rqos)
-		return 0;
-	return RQWB(rqos)->min_lat_nsec;
-}
-
-void wbt_set_min_lat(struct request_queue *q, u64 val)
-{
-	struct rq_qos *rqos = wbt_rq_qos(q);
-	if (!rqos)
-		return;
-
-	RQWB(rqos)->min_lat_nsec = val;
-	if (val)
-		RQWB(rqos)->enable_state = WBT_STATE_ON_MANUAL;
-	else
-		RQWB(rqos)->enable_state = WBT_STATE_OFF_MANUAL;
-
-	wbt_update_limits(RQWB(rqos));
-}
-
 
 static bool close_io(struct rq_wb *rwb)
 {
@@ -541,31 +476,21 @@ static bool close_io(struct rq_wb *rwb)
 
 #define REQ_HIPRIO	(REQ_SYNC | REQ_META | REQ_PRIO)
 
-static inline unsigned int get_limit(struct rq_wb *rwb, blk_opf_t opf)
+static inline unsigned int get_limit(struct rq_wb *rwb, unsigned long rw)
 {
 	unsigned int limit;
 
 	/*
-	 * If we got disabled, just return UINT_MAX. This ensures that
-	 * we'll properly inc a new IO, and dec+wakeup at the end.
-	 */
-	if (!rwb_enabled(rwb))
-		return UINT_MAX;
-
-	if ((opf & REQ_OP_MASK) == REQ_OP_DISCARD)
-		return rwb->wb_background;
-
-	/*
 	 * At this point we know it's a buffered write. If this is
-	 * kswapd trying to free memory, or REQ_SYNC is set, then
+	 * kswapd trying to free memory, or REQ_SYNC is set, set, then
 	 * it's WB_SYNC_ALL writeback, and we'll use the max limit for
 	 * that. If the write is marked as a background write, then use
 	 * the idle limit, or go to normal if we haven't had competing
 	 * IO for a bit.
 	 */
-	if ((opf & REQ_HIPRIO) || wb_recent_wait(rwb) || current_is_kswapd())
-		limit = rwb->rq_depth.max_depth;
-	else if ((opf & REQ_BACKGROUND) || close_io(rwb)) {
+	if ((rw & REQ_HIPRIO) || wb_recent_wait(rwb) || current_is_kswapd())
+		limit = rwb->wb_max;
+	else if ((rw & REQ_BACKGROUND) || close_io(rwb)) {
 		/*
 		 * If less than 100ms since we completed unrelated IO,
 		 * limit us to half the depth for background writeback.
@@ -577,177 +502,185 @@ static inline unsigned int get_limit(struct rq_wb *rwb, blk_opf_t opf)
 	return limit;
 }
 
-struct wbt_wait_data {
-	struct rq_wb *rwb;
-	enum wbt_flags wb_acct;
-	blk_opf_t opf;
-};
-
-static bool wbt_inflight_cb(struct rq_wait *rqw, void *private_data)
+static inline bool may_queue(struct rq_wb *rwb, struct rq_wait *rqw,
+			     wait_queue_entry_t *wait, unsigned long rw)
 {
-	struct wbt_wait_data *data = private_data;
-	return rq_wait_inc_below(rqw, get_limit(data->rwb, data->opf));
-}
+	/*
+	 * inc it here even if disabled, since we'll dec it at completion.
+	 * this only happens if the task was sleeping in __wbt_wait(),
+	 * and someone turned it off at the same time.
+	 */
+	if (!rwb_enabled(rwb)) {
+		atomic_inc(&rqw->inflight);
+		return true;
+	}
 
-static void wbt_cleanup_cb(struct rq_wait *rqw, void *private_data)
-{
-	struct wbt_wait_data *data = private_data;
-	wbt_rqw_done(data->rwb, rqw, data->wb_acct);
+	/*
+	 * If the waitqueue is already active and we are not the next
+	 * in line to be woken up, wait for our turn.
+	 */
+	if (waitqueue_active(&rqw->wait) &&
+	    rqw->wait.head.next != &wait->entry)
+		return false;
+
+	return atomic_inc_below(&rqw->inflight, get_limit(rwb, rw));
 }
 
 /*
  * Block if we will exceed our limit, or if we are currently waiting for
  * the timer to kick off queuing again.
  */
-static void __wbt_wait(struct rq_wb *rwb, enum wbt_flags wb_acct,
-		       blk_opf_t opf)
+static void __wbt_wait(struct rq_wb *rwb, unsigned long rw, spinlock_t *lock)
+	__releases(lock)
+	__acquires(lock)
 {
-	struct rq_wait *rqw = get_rq_wait(rwb, wb_acct);
-	struct wbt_wait_data data = {
-		.rwb = rwb,
-		.wb_acct = wb_acct,
-		.opf = opf,
-	};
+	struct rq_wait *rqw = get_rq_wait(rwb, current_is_kswapd());
+	DEFINE_WAIT(wait);
 
-	rq_qos_wait(rqw, &data, wbt_inflight_cb, wbt_cleanup_cb);
+	if (may_queue(rwb, rqw, &wait, rw))
+		return;
+
+	do {
+		prepare_to_wait_exclusive(&rqw->wait, &wait,
+						TASK_UNINTERRUPTIBLE);
+
+		if (may_queue(rwb, rqw, &wait, rw))
+			break;
+
+		if (lock) {
+			spin_unlock_irq(lock);
+			io_schedule();
+			spin_lock_irq(lock);
+		} else
+			io_schedule();
+	} while (1);
+
+	finish_wait(&rqw->wait, &wait);
 }
 
-static inline bool wbt_should_throttle(struct bio *bio)
+static inline bool wbt_should_throttle(struct rq_wb *rwb, struct bio *bio)
 {
-	switch (bio_op(bio)) {
-	case REQ_OP_WRITE:
-		/*
-		 * Don't throttle WRITE_ODIRECT
-		 */
-		if ((bio->bi_opf & (REQ_SYNC | REQ_IDLE)) ==
-		    (REQ_SYNC | REQ_IDLE))
-			return false;
-		fallthrough;
-	case REQ_OP_DISCARD:
-		return true;
-	default:
+	const int op = bio_op(bio);
+
+	/*
+	 * If not a WRITE, do nothing
+	 */
+	if (op != REQ_OP_WRITE)
 		return false;
-	}
-}
 
-static enum wbt_flags bio_to_wbt_flags(struct rq_wb *rwb, struct bio *bio)
-{
-	enum wbt_flags flags = 0;
+	/*
+	 * Don't throttle WRITE_ODIRECT
+	 */
+	if ((bio->bi_opf & (REQ_SYNC | REQ_IDLE)) == (REQ_SYNC | REQ_IDLE))
+		return false;
 
-	if (!rwb_enabled(rwb))
-		return 0;
-
-	if (bio_op(bio) == REQ_OP_READ) {
-		flags = WBT_READ;
-	} else if (wbt_should_throttle(bio)) {
-		if (current_is_kswapd())
-			flags |= WBT_KSWAPD;
-		if (bio_op(bio) == REQ_OP_DISCARD)
-			flags |= WBT_DISCARD;
-		flags |= WBT_TRACKED;
-	}
-	return flags;
-}
-
-static void wbt_cleanup(struct rq_qos *rqos, struct bio *bio)
-{
-	struct rq_wb *rwb = RQWB(rqos);
-	enum wbt_flags flags = bio_to_wbt_flags(rwb, bio);
-	__wbt_done(rqos, flags);
+	return true;
 }
 
 /*
+ * Returns true if the IO request should be accounted, false if not.
  * May sleep, if we have exceeded the writeback limits. Caller can pass
  * in an irq held spinlock, if it holds one when calling this function.
  * If we do sleep, we'll release and re-grab it.
  */
-static void wbt_wait(struct rq_qos *rqos, struct bio *bio)
+enum wbt_flags wbt_wait(struct rq_wb *rwb, struct bio *bio, spinlock_t *lock)
 {
-	struct rq_wb *rwb = RQWB(rqos);
-	enum wbt_flags flags;
+	unsigned int ret = 0;
 
-	flags = bio_to_wbt_flags(rwb, bio);
-	if (!(flags & WBT_TRACKED)) {
-		if (flags & WBT_READ)
+	if (!rwb_enabled(rwb))
+		return 0;
+
+	if (bio_op(bio) == REQ_OP_READ)
+		ret = WBT_READ;
+
+	if (!wbt_should_throttle(rwb, bio)) {
+		if (ret & WBT_READ)
 			wb_timestamp(rwb, &rwb->last_issue);
-		return;
+		return ret;
 	}
 
-	__wbt_wait(rwb, flags, bio->bi_opf);
+	__wbt_wait(rwb, bio->bi_opf, lock);
 
 	if (!blk_stat_is_active(rwb->cb))
 		rwb_arm_timer(rwb);
+
+	if (current_is_kswapd())
+		ret |= WBT_KSWAPD;
+
+	return ret | WBT_TRACKED;
 }
 
-static void wbt_track(struct rq_qos *rqos, struct request *rq, struct bio *bio)
+void wbt_issue(struct rq_wb *rwb, struct blk_issue_stat *stat)
 {
-	struct rq_wb *rwb = RQWB(rqos);
-	rq->wbt_flags |= bio_to_wbt_flags(rwb, bio);
-}
-
-static void wbt_issue(struct rq_qos *rqos, struct request *rq)
-{
-	struct rq_wb *rwb = RQWB(rqos);
-
 	if (!rwb_enabled(rwb))
 		return;
 
 	/*
-	 * Track sync issue, in case it takes a long time to complete. Allows us
-	 * to react quicker, if a sync IO takes a long time to complete. Note
-	 * that this is just a hint. The request can go away when it completes,
-	 * so it's important we never dereference it. We only use the address to
-	 * compare with, which is why we store the sync_issue time locally.
+	 * Track sync issue, in case it takes a long time to complete. Allows
+	 * us to react quicker, if a sync IO takes a long time to complete.
+	 * Note that this is just a hint. 'stat' can go away when the
+	 * request completes, so it's important we never dereference it. We
+	 * only use the address to compare with, which is why we store the
+	 * sync_issue time locally.
 	 */
-	if (wbt_is_read(rq) && !rwb->sync_issue) {
-		rwb->sync_cookie = rq;
-		rwb->sync_issue = rq->io_start_time_ns;
+	if (wbt_is_read(stat) && !rwb->sync_issue) {
+		rwb->sync_cookie = stat;
+		rwb->sync_issue = blk_stat_time(stat);
 	}
 }
 
-static void wbt_requeue(struct rq_qos *rqos, struct request *rq)
+void wbt_requeue(struct rq_wb *rwb, struct blk_issue_stat *stat)
 {
-	struct rq_wb *rwb = RQWB(rqos);
 	if (!rwb_enabled(rwb))
 		return;
-	if (rq == rwb->sync_cookie) {
+	if (stat == rwb->sync_cookie) {
 		rwb->sync_issue = 0;
 		rwb->sync_cookie = NULL;
 	}
 }
 
-void wbt_set_write_cache(struct request_queue *q, bool write_cache_on)
+void wbt_set_queue_depth(struct rq_wb *rwb, unsigned int depth)
 {
-	struct rq_qos *rqos = wbt_rq_qos(q);
-	if (rqos)
-		RQWB(rqos)->wc = write_cache_on;
+	if (rwb) {
+		rwb->queue_depth = depth;
+		wbt_update_limits(rwb);
+	}
 }
+
+void wbt_set_write_cache(struct rq_wb *rwb, bool write_cache_on)
+{
+	if (rwb)
+		rwb->wc = write_cache_on;
+}
+
+/*
+ * Disable wbt, if enabled by default.
+ */
+void wbt_disable_default(struct request_queue *q)
+{
+	struct rq_wb *rwb = q->rq_wb;
+
+	if (rwb && rwb->enable_state == WBT_STATE_ON_DEFAULT)
+		wbt_exit(q);
+}
+EXPORT_SYMBOL_GPL(wbt_disable_default);
 
 /*
  * Enable wbt if defaults are configured that way
  */
-void wbt_enable_default(struct gendisk *disk)
+void wbt_enable_default(struct request_queue *q)
 {
-	struct request_queue *q = disk->queue;
-	struct rq_qos *rqos;
-	bool disable_flag = q->elevator &&
-		    test_bit(ELEVATOR_FLAG_DISABLE_WBT, &q->elevator->flags);
-
 	/* Throttling already enabled? */
-	rqos = wbt_rq_qos(q);
-	if (rqos) {
-		if (!disable_flag &&
-		    RQWB(rqos)->enable_state == WBT_STATE_OFF_DEFAULT)
-			RQWB(rqos)->enable_state = WBT_STATE_ON_DEFAULT;
+	if (q->rq_wb)
 		return;
-	}
 
 	/* Queue not registered? Maybe shutting down... */
-	if (!blk_queue_registered(q))
+	if (!test_bit(QUEUE_FLAG_REGISTERED, &q->queue_flags))
 		return;
 
-	if (queue_is_mq(q) && !disable_flag)
-		wbt_init(disk);
+	if ((q->mq_ops && IS_ENABLED(CONFIG_BLK_WBT_MQ)) ||
+	    (q->request_fn && IS_ENABLED(CONFIG_BLK_WBT_SQ)))
+		wbt_init(q);
 }
 EXPORT_SYMBOL_GPL(wbt_enable_default);
 
@@ -765,157 +698,23 @@ u64 wbt_default_latency_nsec(struct request_queue *q)
 
 static int wbt_data_dir(const struct request *rq)
 {
-	const enum req_op op = req_op(rq);
+	const int op = req_op(rq);
 
 	if (op == REQ_OP_READ)
 		return READ;
-	else if (op_is_write(op))
+	else if (op == REQ_OP_WRITE || op == REQ_OP_FLUSH)
 		return WRITE;
 
 	/* don't account */
 	return -1;
 }
 
-static void wbt_queue_depth_changed(struct rq_qos *rqos)
+int wbt_init(struct request_queue *q)
 {
-	RQWB(rqos)->rq_depth.queue_depth = blk_queue_depth(rqos->disk->queue);
-	wbt_update_limits(RQWB(rqos));
-}
-
-static void wbt_exit(struct rq_qos *rqos)
-{
-	struct rq_wb *rwb = RQWB(rqos);
-
-	blk_stat_remove_callback(rqos->disk->queue, rwb->cb);
-	blk_stat_free_callback(rwb->cb);
-	kfree(rwb);
-}
-
-/*
- * Disable wbt, if enabled by default.
- */
-void wbt_disable_default(struct gendisk *disk)
-{
-	struct rq_qos *rqos = wbt_rq_qos(disk->queue);
-	struct rq_wb *rwb;
-	if (!rqos)
-		return;
-	rwb = RQWB(rqos);
-	if (rwb->enable_state == WBT_STATE_ON_DEFAULT) {
-		blk_stat_deactivate(rwb->cb);
-		rwb->enable_state = WBT_STATE_OFF_DEFAULT;
-	}
-}
-EXPORT_SYMBOL_GPL(wbt_disable_default);
-
-#ifdef CONFIG_BLK_DEBUG_FS
-static int wbt_curr_win_nsec_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-
-	seq_printf(m, "%llu\n", rwb->cur_win_nsec);
-	return 0;
-}
-
-static int wbt_enabled_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-
-	seq_printf(m, "%d\n", rwb->enable_state);
-	return 0;
-}
-
-static int wbt_id_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-
-	seq_printf(m, "%u\n", rqos->id);
-	return 0;
-}
-
-static int wbt_inflight_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-	int i;
-
-	for (i = 0; i < WBT_NUM_RWQ; i++)
-		seq_printf(m, "%d: inflight %d\n", i,
-			   atomic_read(&rwb->rq_wait[i].inflight));
-	return 0;
-}
-
-static int wbt_min_lat_nsec_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-
-	seq_printf(m, "%lu\n", rwb->min_lat_nsec);
-	return 0;
-}
-
-static int wbt_unknown_cnt_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-
-	seq_printf(m, "%u\n", rwb->unknown_cnt);
-	return 0;
-}
-
-static int wbt_normal_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-
-	seq_printf(m, "%u\n", rwb->wb_normal);
-	return 0;
-}
-
-static int wbt_background_show(void *data, struct seq_file *m)
-{
-	struct rq_qos *rqos = data;
-	struct rq_wb *rwb = RQWB(rqos);
-
-	seq_printf(m, "%u\n", rwb->wb_background);
-	return 0;
-}
-
-static const struct blk_mq_debugfs_attr wbt_debugfs_attrs[] = {
-	{"curr_win_nsec", 0400, wbt_curr_win_nsec_show},
-	{"enabled", 0400, wbt_enabled_show},
-	{"id", 0400, wbt_id_show},
-	{"inflight", 0400, wbt_inflight_show},
-	{"min_lat_nsec", 0400, wbt_min_lat_nsec_show},
-	{"unknown_cnt", 0400, wbt_unknown_cnt_show},
-	{"wb_normal", 0400, wbt_normal_show},
-	{"wb_background", 0400, wbt_background_show},
-	{},
-};
-#endif
-
-static const struct rq_qos_ops wbt_rqos_ops = {
-	.throttle = wbt_wait,
-	.issue = wbt_issue,
-	.track = wbt_track,
-	.requeue = wbt_requeue,
-	.done = wbt_done,
-	.cleanup = wbt_cleanup,
-	.queue_depth_changed = wbt_queue_depth_changed,
-	.exit = wbt_exit,
-#ifdef CONFIG_BLK_DEBUG_FS
-	.debugfs_attrs = wbt_debugfs_attrs,
-#endif
-};
-
-int wbt_init(struct gendisk *disk)
-{
-	struct request_queue *q = disk->queue;
 	struct rq_wb *rwb;
 	int i;
-	int ret;
+
+	BUILD_BUG_ON(WBT_NR_BITS > BLK_STAT_RES_BITS);
 
 	rwb = kzalloc(sizeof(*rwb), GFP_KERNEL);
 	if (!rwb)
@@ -927,32 +726,41 @@ int wbt_init(struct gendisk *disk)
 		return -ENOMEM;
 	}
 
-	for (i = 0; i < WBT_NUM_RWQ; i++)
-		rq_wait_init(&rwb->rq_wait[i]);
+	for (i = 0; i < WBT_NUM_RWQ; i++) {
+		atomic_set(&rwb->rq_wait[i].inflight, 0);
+		init_waitqueue_head(&rwb->rq_wait[i].wait);
+	}
 
+	rwb->wc = 1;
+	rwb->queue_depth = RWB_DEF_DEPTH;
 	rwb->last_comp = rwb->last_issue = jiffies;
+	rwb->queue = q;
 	rwb->win_nsec = RWB_WINDOW_NSEC;
 	rwb->enable_state = WBT_STATE_ON_DEFAULT;
-	rwb->wc = test_bit(QUEUE_FLAG_WC, &q->queue_flags);
-	rwb->rq_depth.default_depth = RWB_DEF_DEPTH;
-	rwb->min_lat_nsec = wbt_default_latency_nsec(q);
-	rwb->rq_depth.queue_depth = blk_queue_depth(q);
 	wbt_update_limits(rwb);
 
 	/*
 	 * Assign rwb and add the stats callback.
 	 */
-	ret = rq_qos_add(&rwb->rqos, disk, RQ_QOS_WBT, &wbt_rqos_ops);
-	if (ret)
-		goto err_free;
-
+	q->rq_wb = rwb;
 	blk_stat_add_callback(q, rwb->cb);
 
+	rwb->min_lat_nsec = wbt_default_latency_nsec(q);
+
+	wbt_set_queue_depth(rwb, blk_queue_depth(q));
+	wbt_set_write_cache(rwb, test_bit(QUEUE_FLAG_WC, &q->queue_flags));
+
 	return 0;
+}
 
-err_free:
-	blk_stat_free_callback(rwb->cb);
-	kfree(rwb);
-	return ret;
+void wbt_exit(struct request_queue *q)
+{
+	struct rq_wb *rwb = q->rq_wb;
 
+	if (rwb) {
+		blk_stat_remove_callback(q, rwb->cb);
+		blk_stat_free_callback(rwb->cb);
+		q->rq_wb = NULL;
+		kfree(rwb);
+	}
 }

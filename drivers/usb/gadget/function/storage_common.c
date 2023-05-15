@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * storage_common.c -- Common definitions for mass storage functionality
  *
  * Copyright (C) 2003-2008 Alan Stern
  * Copyeight (C) 2009 Samsung Electronics
  * Author: Michal Nazarewicz (mina86@mina86.com)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 /*
@@ -23,11 +27,21 @@
 #include <linux/blkdev.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/kstrtox.h>
 #include <linux/usb/composite.h>
+#include <uapi/linux/usb/ch9.h>
 
 #include "storage_common.h"
 
+#ifdef CONFIG_USBIF_COMPLIANCE
+static struct usb_otg20_descriptor
+fsg_otg_desc = {
+	.bLength = sizeof(fsg_otg_desc),
+	.bDescriptorType = USB_DT_OTG,
+	/* OTG 2.0: */
+	.bmAttributes =	USB_OTG_SRP | USB_OTG_HNP,
+	.bcdOTG = cpu_to_le16(0x200),
+};
+#endif
 /* There is only one interface. */
 
 struct usb_interface_descriptor fsg_intf_desc = {
@@ -68,6 +82,9 @@ struct usb_endpoint_descriptor fsg_fs_bulk_out_desc = {
 EXPORT_SYMBOL_GPL(fsg_fs_bulk_out_desc);
 
 struct usb_descriptor_header *fsg_fs_function[] = {
+#ifdef CONFIG_USBIF_COMPLIANCE
+	(struct usb_descriptor_header *) &fsg_otg_desc,
+#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_fs_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_fs_bulk_out_desc,
@@ -105,6 +122,9 @@ EXPORT_SYMBOL_GPL(fsg_hs_bulk_out_desc);
 
 
 struct usb_descriptor_header *fsg_hs_function[] = {
+#ifdef CONFIG_USBIF_COMPLIANCE
+	(struct usb_descriptor_header *) &fsg_otg_desc,
+#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_hs_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_hs_bulk_out_desc,
@@ -149,6 +169,9 @@ struct usb_ss_ep_comp_descriptor fsg_ss_bulk_out_comp_desc = {
 EXPORT_SYMBOL_GPL(fsg_ss_bulk_out_comp_desc);
 
 struct usb_descriptor_header *fsg_ss_function[] = {
+#ifdef CONFIG_USBIF_COMPLIANCE
+	(struct usb_descriptor_header *) &fsg_otg_desc,
+#endif
 	(struct usb_descriptor_header *) &fsg_intf_desc,
 	(struct usb_descriptor_header *) &fsg_ss_bulk_in_desc,
 	(struct usb_descriptor_header *) &fsg_ss_bulk_in_comp_desc,
@@ -205,7 +228,7 @@ int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	if (!(filp->f_mode & FMODE_WRITE))
 		ro = 1;
 
-	inode = filp->f_mapping->host;
+	inode = file_inode(filp);
 	if ((!S_ISREG(inode->i_mode) && !S_ISBLK(inode->i_mode))) {
 		LINFO(curlun, "invalid file type: %s\n", filename);
 		goto out;
@@ -222,7 +245,7 @@ int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	if (!(filp->f_mode & FMODE_CAN_WRITE))
 		ro = 1;
 
-	size = i_size_read(inode);
+	size = i_size_read(inode->i_mapping->host);
 	if (size < 0) {
 		LINFO(curlun, "unable to find file size: %s\n", filename);
 		rc = (int) size;
@@ -232,8 +255,8 @@ int fsg_lun_open(struct fsg_lun *curlun, const char *filename)
 	if (curlun->cdrom) {
 		blksize = 2048;
 		blkbits = 11;
-	} else if (S_ISBLK(inode->i_mode)) {
-		blksize = bdev_logical_block_size(I_BDEV(inode));
+	} else if (inode->i_bdev) {
+		blksize = bdev_logical_block_size(inode->i_bdev);
 		blkbits = blksize_bits(blksize);
 	} else {
 		blksize = 512;
@@ -295,10 +318,8 @@ EXPORT_SYMBOL_GPL(fsg_lun_fsync_sub);
 void store_cdrom_address(u8 *dest, int msf, u32 addr)
 {
 	if (msf) {
-		/*
-		 * Convert to Minutes-Seconds-Frames.
-		 * Sector size is already set to 2048 bytes.
-		 */
+		/* Convert to Minutes-Seconds-Frames */
+		addr >>= 2;		/* Convert to 2048-byte frames */
 		addr += 2*75;		/* Lead-in occupies 2 seconds */
 		dest[3] = addr % 75;	/* Frames */
 		addr /= 75;
@@ -397,7 +418,7 @@ ssize_t fsg_store_ro(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 	ssize_t		rc;
 	bool		ro;
 
-	rc = kstrtobool(buf, &ro);
+	rc = strtobool(buf, &ro);
 	if (rc)
 		return rc;
 
@@ -420,7 +441,7 @@ ssize_t fsg_store_nofua(struct fsg_lun *curlun, const char *buf, size_t count)
 	bool		nofua;
 	int		ret;
 
-	ret = kstrtobool(buf, &nofua);
+	ret = strtobool(buf, &nofua);
 	if (ret)
 		return ret;
 
@@ -442,6 +463,28 @@ ssize_t fsg_store_file(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 	if (curlun->prevent_medium_removal && fsg_lun_is_open(curlun)) {
 		LDBG(curlun, "eject attempt prevented\n");
 		return -EBUSY;				/* "Door is locked" */
+	}
+	pr_notice("%s file=%s, count=%d, curlun->cdrom=%d\n",
+			__func__, buf, (int)count, curlun->cdrom);
+
+	/*
+	 * WORKAROUND:VOLD would clean the file path after switching to bicr.
+	 * So when the lun is being a CD-ROM a.k.a. BICR.
+	 * Dont clean the file path to empty.
+	 */
+	if (curlun->cdrom == 1 && count == 1)
+		return count;
+
+	/*
+	 * WORKAROUND:Should be closed the fsg lun for virtual cd-rom,
+	 * when switch to other usb functions.
+	 * Use the special keyword "off", because the init can
+	 * not parse the char '\n' in rc file and write into the sysfs.
+	 */
+	if (count == 3 &&
+			buf[0] == 'o' && buf[1] == 'f' && buf[2] == 'f' &&
+			fsg_lun_is_open(curlun)) {
+		((char *) buf)[0] = 0;
 	}
 
 	/* Remove a trailing newline */
@@ -471,7 +514,7 @@ ssize_t fsg_store_cdrom(struct fsg_lun *curlun, struct rw_semaphore *filesem,
 	bool		cdrom;
 	int		ret;
 
-	ret = kstrtobool(buf, &cdrom);
+	ret = strtobool(buf, &cdrom);
 	if (ret)
 		return ret;
 
@@ -494,7 +537,7 @@ ssize_t fsg_store_removable(struct fsg_lun *curlun, const char *buf,
 	bool		removable;
 	int		ret;
 
-	ret = kstrtobool(buf, &removable);
+	ret = strtobool(buf, &removable);
 	if (ret)
 		return ret;
 
@@ -521,20 +564,5 @@ ssize_t fsg_store_inquiry_string(struct fsg_lun *curlun, const char *buf,
 	return count;
 }
 EXPORT_SYMBOL_GPL(fsg_store_inquiry_string);
-
-ssize_t fsg_store_forced_eject(struct fsg_lun *curlun, struct rw_semaphore *filesem,
-			       const char *buf, size_t count)
-{
-	int ret;
-
-	/*
-	 * Forcibly detach the backing file from the LUN
-	 * regardless of whether the host has allowed it.
-	 */
-	curlun->prevent_medium_removal = 0;
-	ret = fsg_store_file(curlun, filesem, "", 0);
-	return ret < 0 ? ret : count;
-}
-EXPORT_SYMBOL_GPL(fsg_store_forced_eject);
 
 MODULE_LICENSE("GPL");

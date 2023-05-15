@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * saa7110 - Philips SAA7110(A) video decoder driver
  *
@@ -10,6 +9,16 @@
  *
  * Changes by Ronald Bultje <rbultje@ronald.bitfreak.net>
  *    - moved over to linux>=2.4.x i2c protocol (1/1/2003)
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -358,7 +367,8 @@ static const struct v4l2_subdev_ops saa7110_ops = {
 
 /* ----------------------------------------------------------------------- */
 
-static int saa7110_probe(struct i2c_client *client)
+static int saa7110_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct saa7110 *decoder;
 	struct v4l2_subdev *sd;
@@ -427,13 +437,14 @@ static int saa7110_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void saa7110_remove(struct i2c_client *client)
+static int saa7110_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct saa7110 *decoder = to_saa7110(sd);
 
 	v4l2_device_unregister_subdev(sd);
 	v4l2_ctrl_handler_free(&decoder->hdl);
+	return 0;
 }
 
 /* ----------------------------------------------------------------------- */
@@ -448,7 +459,7 @@ static struct i2c_driver saa7110_driver = {
 	.driver = {
 		.name	= "saa7110",
 	},
-	.probe_new	= saa7110_probe,
+	.probe		= saa7110_probe,
 	.remove		= saa7110_remove,
 	.id_table	= saa7110_id,
 };

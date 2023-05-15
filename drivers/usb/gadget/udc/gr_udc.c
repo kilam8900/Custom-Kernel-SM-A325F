@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * USB Peripheral Controller driver for Aeroflex Gaisler GRUSBDC.
  *
@@ -8,7 +7,12 @@
  * GRLIB VHDL IP core library.
  *
  * Full documentation of the GRUSBDC core can be found here:
- * https://www.gaisler.com/products/grlib/grip.pdf
+ * http://www.gaisler.com/products/grlib/grip.pdf
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
  *
  * Contributors:
  * - Andreas Larsson <andreas@gaisler.com>
@@ -29,7 +33,6 @@
 #include <linux/list.h>
 #include <linux/interrupt.h>
 #include <linux/device.h>
-#include <linux/usb.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
 #include <linux/dma-mapping.h>
@@ -48,6 +51,7 @@
 #define	DRIVER_DESC	"Aeroflex Gaisler GRUSBDC USB Peripheral Controller"
 
 static const char driver_name[] = DRIVER_NAME;
+static const char driver_desc[] = DRIVER_DESC;
 
 #define gr_read32(x) (ioread32be((x)))
 #define gr_write32(x, v) (iowrite32be((v), (x)))
@@ -179,7 +183,8 @@ static void gr_seq_ep_show(struct seq_file *seq, struct gr_ep *ep)
 	seq_puts(seq, "\n");
 }
 
-static int gr_dfs_show(struct seq_file *seq, void *v)
+
+static int gr_seq_show(struct seq_file *seq, void *v)
 {
 	struct gr_udc *dev = seq->private;
 	u32 control = gr_read32(&dev->regs->control);
@@ -202,20 +207,34 @@ static int gr_dfs_show(struct seq_file *seq, void *v)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(gr_dfs);
+
+static int gr_dfs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, gr_seq_show, inode->i_private);
+}
+
+static const struct file_operations gr_dfs_fops = {
+	.owner		= THIS_MODULE,
+	.open		= gr_dfs_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static void gr_dfs_create(struct gr_udc *dev)
 {
 	const char *name = "gr_udc_state";
-	struct dentry *root;
 
-	root = debugfs_create_dir(dev_name(dev->dev), usb_debug_root);
-	debugfs_create_file(name, 0444, root, dev, &gr_dfs_fops);
+	dev->dfs_root = debugfs_create_dir(dev_name(dev->dev), NULL);
+	dev->dfs_state = debugfs_create_file(name, 0444, dev->dfs_root, dev,
+					     &gr_dfs_fops);
 }
 
 static void gr_dfs_delete(struct gr_udc *dev)
 {
-	debugfs_lookup_and_remove(dev_name(dev->dev), usb_debug_root);
+	/* Handles NULL and ERR pointers internally */
+	debugfs_remove(dev->dfs_state);
+	debugfs_remove(dev->dfs_root);
 }
 
 #else /* !CONFIG_USB_GADGET_DEBUG_FS */
@@ -913,9 +932,9 @@ static int gr_device_request(struct gr_udc *dev, u8 type, u8 request,
 			return gr_ep0_respond_empty(dev);
 
 		case USB_DEVICE_TEST_MODE:
-			/* The hardware does not support USB_TEST_FORCE_ENABLE */
+			/* The hardware does not support TEST_FORCE_EN */
 			test = index >> 8;
-			if (test >= USB_TEST_J && test <= USB_TEST_PACKET) {
+			if (test >= TEST_J && test <= TEST_PACKET) {
 				dev->test_mode = test;
 				return gr_ep0_respond(dev, NULL, 0,
 						      gr_ep0_testmode_complete);
@@ -1242,7 +1261,7 @@ static int gr_handle_in_ep(struct gr_ep *ep)
 	if (!req->last_desc)
 		return 0;
 
-	if (READ_ONCE(req->last_desc->ctrl) & GR_DESC_IN_CTRL_EN)
+	if (ACCESS_ONCE(req->last_desc->ctrl) & GR_DESC_IN_CTRL_EN)
 		return 0; /* Not put in hardware buffers yet */
 
 	if (gr_read32(&ep->regs->epstat) & (GR_EPSTAT_B1 | GR_EPSTAT_B0))
@@ -1271,7 +1290,7 @@ static int gr_handle_out_ep(struct gr_ep *ep)
 	if (!req->curr_desc)
 		return 0;
 
-	ctrl = READ_ONCE(req->curr_desc->ctrl);
+	ctrl = ACCESS_ONCE(req->curr_desc->ctrl);
 	if (ctrl & GR_DESC_OUT_CTRL_EN)
 		return 0; /* Not received yet */
 
@@ -1519,7 +1538,7 @@ static int gr_ep_enable(struct usb_ep *_ep,
 	 * Bits 10-0 set the max payload. 12-11 set the number of
 	 * additional transactions.
 	 */
-	max = usb_endpoint_maxp(desc);
+	max = 0x7ff & usb_endpoint_maxp(desc);
 	nt = usb_endpoint_maxp_mult(desc) - 1;
 	buffer_size = GR_BUFFER_SIZE(epctrl);
 	if (nt && (mode == 0 || mode == 2)) {
@@ -1690,7 +1709,7 @@ static int gr_queue_ext(struct usb_ep *_ep, struct usb_request *_req,
 /* Dequeue JUST ONE request */
 static int gr_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
-	struct gr_request *req = NULL, *iter;
+	struct gr_request *req;
 	struct gr_ep *ep;
 	struct gr_udc *dev;
 	int ret = 0;
@@ -1710,13 +1729,11 @@ static int gr_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	spin_lock_irqsave(&dev->lock, flags);
 
 	/* Make sure it's actually queued on this endpoint */
-	list_for_each_entry(iter, &ep->queue, queue) {
-		if (&iter->req != _req)
-			continue;
-		req = iter;
-		break;
+	list_for_each_entry(req, &ep->queue, queue) {
+		if (&req->req == _req)
+			break;
 	}
-	if (!req) {
+	if (&req->req != _req) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -1906,6 +1923,7 @@ static int gr_udc_start(struct usb_gadget *gadget,
 	spin_lock(&dev->lock);
 
 	/* Hook up the driver */
+	driver->driver.bus = NULL;
 	dev->driver = driver;
 
 	/* Get ready for host detection */
@@ -1982,12 +2000,9 @@ static int gr_ep_init(struct gr_udc *dev, int num, int is_in, u32 maxplimit)
 
 	if (num == 0) {
 		_req = gr_alloc_request(&ep->ep, GFP_ATOMIC);
-		if (!_req)
-			return -ENOMEM;
-
 		buf = devm_kzalloc(dev->dev, PAGE_SIZE, GFP_DMA | GFP_ATOMIC);
-		if (!buf) {
-			gr_free_request(&ep->ep, _req);
+		if (!_req || !buf) {
+			/* possible _req freed by gr_probe via gr_remove */
 			return -ENOMEM;
 		}
 
@@ -2123,6 +2138,7 @@ static int gr_request_irq(struct gr_udc *dev, int irq)
 static int gr_probe(struct platform_device *pdev)
 {
 	struct gr_udc *dev;
+	struct resource *res;
 	struct gr_regs __iomem *regs;
 	int retval;
 	u32 status;
@@ -2132,20 +2148,25 @@ static int gr_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	dev->dev = &pdev->dev;
 
-	regs = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	regs = devm_ioremap_resource(dev->dev, res);
 	if (IS_ERR(regs))
 		return PTR_ERR(regs);
 
 	dev->irq = platform_get_irq(pdev, 0);
-	if (dev->irq <= 0)
+	if (dev->irq <= 0) {
+		dev_err(dev->dev, "No irq found\n");
 		return -ENODEV;
+	}
 
 	/* Some core configurations has separate irqs for IN and OUT events */
 	dev->irqi = platform_get_irq(pdev, 1);
 	if (dev->irqi > 0) {
 		dev->irqo = platform_get_irq(pdev, 2);
-		if (dev->irqo <= 0)
+		if (dev->irqo <= 0) {
+			dev_err(dev->dev, "Found irqi but not irqo\n");
 			return -ENODEV;
+		}
 	} else {
 		dev->irqi = 0;
 	}

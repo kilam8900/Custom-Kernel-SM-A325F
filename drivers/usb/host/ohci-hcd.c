@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-1.0+
 /*
  * Open Host Controller Interface (OHCI) driver for USB.
  *
@@ -16,7 +15,7 @@
  * OHCI is the main "non-Intel/VIA" standard for USB 1.1 host controller
  * interfaces (though some non-x86 Intel chips use it).  It supports
  * smarter hardware than UHCI.  A download link for the spec available
- * through the https://www.usb.org website.
+ * through the http://www.usb.org website.
  *
  * This file is licenced under the GPL.
  */
@@ -40,7 +39,6 @@
 #include <linux/dmapool.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
-#include <linux/genalloc.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -82,7 +80,7 @@ static const char	hcd_name [] = "ohci_hcd";
 
 static void ohci_dump(struct ohci_hcd *ohci);
 static void ohci_stop(struct usb_hcd *hcd);
-static void io_watchdog_func(struct timer_list *t);
+static void io_watchdog_func(unsigned long _ohci);
 
 #include "ohci-hub.c"
 #include "ohci-dbg.c"
@@ -102,7 +100,7 @@ static void io_watchdog_func(struct timer_list *t);
 
 
 /* Some boards misreport power switching/overcurrent */
-static bool distrust_firmware;
+static bool distrust_firmware = true;
 module_param (distrust_firmware, bool, 0);
 MODULE_PARM_DESC (distrust_firmware,
 	"true to distrust firmware power/overcurrent setup");
@@ -171,7 +169,7 @@ static int ohci_urb_enqueue (
 
 			/* 1 TD for setup, 1 for ACK, plus ... */
 			size = 2;
-			fallthrough;
+			/* FALLTHROUGH */
 		// case PIPE_INTERRUPT:
 		// case PIPE_BULK:
 		default:
@@ -181,7 +179,8 @@ static int ohci_urb_enqueue (
 				size++;
 			else if ((urb->transfer_flags & URB_ZERO_PACKET) != 0
 				&& (urb->transfer_buffer_length
-					% usb_maxpacket(urb->dev, pipe)) == 0)
+					% usb_maxpacket (urb->dev, pipe,
+						usb_pipeout (pipe))) == 0)
 				size++;
 			break;
 		case PIPE_ISOCHRONOUS: /* number of packets from URB */
@@ -190,7 +189,8 @@ static int ohci_urb_enqueue (
 	}
 
 	/* allocate the private part of the URB */
-	urb_priv = kzalloc(struct_size(urb_priv, td, size), mem_flags);
+	urb_priv = kzalloc (sizeof (urb_priv_t) + size * sizeof (struct td *),
+			mem_flags);
 	if (!urb_priv)
 		return -ENOMEM;
 	INIT_LIST_HEAD (&urb_priv->pending);
@@ -383,7 +383,7 @@ sanitize:
 			ed_free (ohci, ed);
 			break;
 		}
-		fallthrough;
+		/* else FALL THROUGH */
 	default:
 		/* caller was supposed to have unlinked any requests;
 		 * that's not our job.  can't recover; must leak ed.
@@ -455,7 +455,7 @@ static int ohci_init (struct ohci_hcd *ohci)
 	struct usb_hcd *hcd = ohci_to_hcd(ohci);
 
 	/* Accept arbitrarily long scatter-gather lists */
-	if (!hcd->localmem_pool)
+	if (!(hcd->driver->flags & HCD_LOCAL_MEM))
 		hcd->self.sg_tablesize = ~0;
 
 	if (distrust_firmware)
@@ -510,18 +510,12 @@ static int ohci_init (struct ohci_hcd *ohci)
 	if (ohci->hcca)
 		return 0;
 
-	timer_setup(&ohci->io_watchdog, io_watchdog_func, 0);
+	setup_timer(&ohci->io_watchdog, io_watchdog_func,
+			(unsigned long) ohci);
 	ohci->prev_frame_no = IO_WATCHDOG_OFF;
 
-	if (hcd->localmem_pool)
-		ohci->hcca = gen_pool_dma_alloc_align(hcd->localmem_pool,
-						sizeof(*ohci->hcca),
-						&ohci->hcca_dma, 256);
-	else
-		ohci->hcca = dma_alloc_coherent(hcd->self.controller,
-						sizeof(*ohci->hcca),
-						&ohci->hcca_dma,
-						GFP_KERNEL);
+	ohci->hcca = dma_alloc_coherent (hcd->self.controller,
+			sizeof(*ohci->hcca), &ohci->hcca_dma, GFP_KERNEL);
 	if (!ohci->hcca)
 		return -ENOMEM;
 
@@ -671,24 +665,20 @@ retry:
 
 	/* handle root hub init quirks ... */
 	val = roothub_a (ohci);
-	/* Configure for per-port over-current protection by default */
-	val &= ~RH_A_NOCP;
-	val |= RH_A_OCPM;
+	val &= ~(RH_A_PSM | RH_A_OCPM);
 	if (ohci->flags & OHCI_QUIRK_SUPERIO) {
-		/* NSC 87560 and maybe others.
-		 * Ganged power switching, no over-current protection.
-		 */
+		/* NSC 87560 and maybe others */
 		val |= RH_A_NOCP;
-		val &= ~(RH_A_POTPGT | RH_A_NPS | RH_A_PSM | RH_A_OCPM);
+		val &= ~(RH_A_POTPGT | RH_A_NPS);
+		ohci_writel (ohci, val, &ohci->regs->roothub.a);
 	} else if ((ohci->flags & OHCI_QUIRK_AMD756) ||
 			(ohci->flags & OHCI_QUIRK_HUB_POWER)) {
 		/* hub power always on; required for AMD-756 and some
-		 * Mac platforms.
+		 * Mac platforms.  ganged overcurrent reporting, if any.
 		 */
 		val |= RH_A_NPS;
+		ohci_writel (ohci, val, &ohci->regs->roothub.a);
 	}
-	ohci_writel(ohci, val, &ohci->regs->roothub.a);
-
 	ohci_writel (ohci, RH_HS_LPSC, &ohci->regs->roothub.status);
 	ohci_writel (ohci, (val & RH_A_NPS) ? 0 : RH_B_PPCM,
 						&ohci->regs->roothub.b);
@@ -744,9 +734,9 @@ static int ohci_start(struct usb_hcd *hcd)
  * the unlink list.  As a result, URBs could never be dequeued and
  * endpoints could never be released.
  */
-static void io_watchdog_func(struct timer_list *t)
+static void io_watchdog_func(unsigned long _ohci)
 {
-	struct ohci_hcd	*ohci = from_timer(ohci, t, io_watchdog);
+	struct ohci_hcd	*ohci = (struct ohci_hcd *) _ohci;
 	bool		takeback_all_pending = false;
 	u32		status;
 	u32		head;
@@ -807,7 +797,7 @@ static void io_watchdog_func(struct timer_list *t)
 		}
 
 		/* find the last TD processed by the controller. */
-		head = hc32_to_cpu(ohci, READ_ONCE(ed->hwHeadP)) & TD_MASK;
+		head = hc32_to_cpu(ohci, ACCESS_ONCE(ed->hwHeadP)) & TD_MASK;
 		td_start = td;
 		td_next = list_prepare_entry(td, &ed->td_list, td_list);
 		list_for_each_entry_continue(td_next, &ed->td_list, td_list) {
@@ -1009,14 +999,9 @@ static void ohci_stop (struct usb_hcd *hcd)
 	remove_debug_files (ohci);
 	ohci_mem_cleanup (ohci);
 	if (ohci->hcca) {
-		if (hcd->localmem_pool)
-			gen_pool_free(hcd->localmem_pool,
-				      (unsigned long)ohci->hcca,
-				      sizeof(*ohci->hcca));
-		else
-			dma_free_coherent(hcd->self.controller,
-					  sizeof(*ohci->hcca),
-					  ohci->hcca, ohci->hcca_dma);
+		dma_free_coherent (hcd->self.controller,
+				sizeof *ohci->hcca,
+				ohci->hcca, ohci->hcca_dma);
 		ohci->hcca = NULL;
 		ohci->hcca_dma = 0;
 	}
@@ -1053,7 +1038,7 @@ int ohci_restart(struct ohci_hcd *ohci)
 			ed->ed_next = ohci->ed_rm_list;
 			ed->ed_prev = NULL;
 			ohci->ed_rm_list = ed;
-			fallthrough;
+			/* FALLTHROUGH */
 		case ED_UNLINK:
 			break;
 		default:
@@ -1189,7 +1174,7 @@ static const struct hc_driver ohci_hc_driver = {
 	 * generic hardware linkage
 	*/
 	.irq =                  ohci_irq,
-	.flags =                HCD_MEMORY | HCD_DMA | HCD_USB11,
+	.flags =                HCD_MEMORY | HCD_USB11,
 
 	/*
 	* basic lifecycle operations
@@ -1264,6 +1249,16 @@ MODULE_LICENSE ("GPL");
 #define SM501_OHCI_DRIVER	ohci_hcd_sm501_driver
 #endif
 
+#ifdef CONFIG_MFD_TC6393XB
+#include "ohci-tmio.c"
+#define TMIO_OHCI_DRIVER	ohci_hcd_tmio_driver
+#endif
+
+#ifdef CONFIG_TILE_USB
+#include "ohci-tilegx.c"
+#define PLATFORM_DRIVER		ohci_hcd_tilegx_driver
+#endif
+
 static int __init ohci_hcd_mod_init(void)
 {
 	int retval = 0;
@@ -1271,16 +1266,27 @@ static int __init ohci_hcd_mod_init(void)
 	if (usb_disabled())
 		return -ENODEV;
 
+	printk(KERN_INFO "%s: " DRIVER_DESC "\n", hcd_name);
 	pr_debug ("%s: block sizes: ed %zd td %zd\n", hcd_name,
 		sizeof (struct ed), sizeof (struct td));
 	set_bit(USB_OHCI_LOADED, &usb_hcds_loaded);
 
 	ohci_debug_root = debugfs_create_dir("ohci", usb_debug_root);
+	if (!ohci_debug_root) {
+		retval = -ENOENT;
+		goto error_debug;
+	}
 
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	retval = ps3_ohci_driver_register(&PS3_SYSTEM_BUS_DRIVER);
 	if (retval < 0)
 		goto error_ps3;
+#endif
+
+#ifdef PLATFORM_DRIVER
+	retval = platform_driver_register(&PLATFORM_DRIVER);
+	if (retval < 0)
+		goto error_platform;
 #endif
 
 #ifdef OF_PLATFORM_DRIVER
@@ -1301,9 +1307,19 @@ static int __init ohci_hcd_mod_init(void)
 		goto error_sm501;
 #endif
 
+#ifdef TMIO_OHCI_DRIVER
+	retval = platform_driver_register(&TMIO_OHCI_DRIVER);
+	if (retval < 0)
+		goto error_tmio;
+#endif
+
 	return retval;
 
 	/* Error path */
+#ifdef TMIO_OHCI_DRIVER
+	platform_driver_unregister(&TMIO_OHCI_DRIVER);
+ error_tmio:
+#endif
 #ifdef SM501_OHCI_DRIVER
 	platform_driver_unregister(&SM501_OHCI_DRIVER);
  error_sm501:
@@ -1316,12 +1332,17 @@ static int __init ohci_hcd_mod_init(void)
 	platform_driver_unregister(&OF_PLATFORM_DRIVER);
  error_of_platform:
 #endif
+#ifdef PLATFORM_DRIVER
+	platform_driver_unregister(&PLATFORM_DRIVER);
+ error_platform:
+#endif
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	ps3_ohci_driver_unregister(&PS3_SYSTEM_BUS_DRIVER);
  error_ps3:
 #endif
 	debugfs_remove(ohci_debug_root);
 	ohci_debug_root = NULL;
+ error_debug:
 
 	clear_bit(USB_OHCI_LOADED, &usb_hcds_loaded);
 	return retval;
@@ -1330,6 +1351,9 @@ module_init(ohci_hcd_mod_init);
 
 static void __exit ohci_hcd_mod_exit(void)
 {
+#ifdef TMIO_OHCI_DRIVER
+	platform_driver_unregister(&TMIO_OHCI_DRIVER);
+#endif
 #ifdef SM501_OHCI_DRIVER
 	platform_driver_unregister(&SM501_OHCI_DRIVER);
 #endif
@@ -1338,6 +1362,9 @@ static void __exit ohci_hcd_mod_exit(void)
 #endif
 #ifdef OF_PLATFORM_DRIVER
 	platform_driver_unregister(&OF_PLATFORM_DRIVER);
+#endif
+#ifdef PLATFORM_DRIVER
+	platform_driver_unregister(&PLATFORM_DRIVER);
 #endif
 #ifdef PS3_SYSTEM_BUS_DRIVER
 	ps3_ohci_driver_unregister(&PS3_SYSTEM_BUS_DRIVER);

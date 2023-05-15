@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/export.h>
@@ -17,7 +16,7 @@ struct foo {
 	unsigned int bar;
 };
 
-static struct foo *foo;
+struct foo *foo;
 
 static int __init test_debug_virtual_init(void)
 {

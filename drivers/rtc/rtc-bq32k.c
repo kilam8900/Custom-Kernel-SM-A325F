@@ -1,19 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for TI BQ32000 RTC.
  *
  * Copyright (C) 2009 Semihalf.
  * Copyright (C) 2014 Pavel Machek <pavel@denx.de>
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
  * You can get hardware description at
- * https://www.ti.com/lit/ds/symlink/bq32000.pdf
+ * http://www.ti.com/lit/ds/symlink/bq32000.pdf
  */
 
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/rtc.h>
 #include <linux/init.h>
-#include <linux/kstrtox.h>
 #include <linux/errno.h>
 #include <linux/bcd.h>
 
@@ -33,10 +35,6 @@
 #define BQ32K_TCH2		0x08	/* Trickle charge enable */
 #define BQ32K_CFG2		0x09	/* Trickle charger control */
 #define BQ32K_TCFE		BIT(6)	/* Trickle charge FET bypass */
-
-#define MAX_LEN			10	/* Maximum number of consecutive
-					 * register for this particular RTC.
-					 */
 
 struct bq32k_regs {
 	uint8_t		seconds;
@@ -76,7 +74,7 @@ static int bq32k_read(struct device *dev, void *data, uint8_t off, uint8_t len)
 static int bq32k_write(struct device *dev, void *data, uint8_t off, uint8_t len)
 {
 	struct i2c_client *client = to_i2c_client(dev);
-	uint8_t buffer[MAX_LEN + 1];
+	uint8_t buffer[len + 1];
 
 	buffer[0] = off;
 	memcpy(&buffer[1], data, len);
@@ -112,7 +110,7 @@ static int bq32k_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	tm->tm_year = bcd2bin(regs.years) +
 				((regs.cent_hours & BQ32K_CENT) ? 100 : 0);
 
-	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int bq32k_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -250,7 +248,8 @@ static void bq32k_sysfs_unregister(struct device *dev)
 	device_remove_file(dev, &dev_attr_trickle_charge_bypass);
 }
 
-static int bq32k_probe(struct i2c_client *client)
+static int bq32k_probe(struct i2c_client *client,
+				const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 	struct rtc_device *rtc;
@@ -298,9 +297,11 @@ static int bq32k_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void bq32k_remove(struct i2c_client *client)
+static int bq32k_remove(struct i2c_client *client)
 {
 	bq32k_sysfs_unregister(&client->dev);
+
+	return 0;
 }
 
 static const struct i2c_device_id bq32k_id[] = {
@@ -309,7 +310,7 @@ static const struct i2c_device_id bq32k_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, bq32k_id);
 
-static const __maybe_unused struct of_device_id bq32k_of_match[] = {
+static const struct of_device_id bq32k_of_match[] = {
 	{ .compatible = "ti,bq32000" },
 	{ }
 };
@@ -320,7 +321,7 @@ static struct i2c_driver bq32k_driver = {
 		.name	= "bq32k",
 		.of_match_table = of_match_ptr(bq32k_of_match),
 	},
-	.probe_new	= bq32k_probe,
+	.probe		= bq32k_probe,
 	.remove		= bq32k_remove,
 	.id_table	= bq32k_id,
 };

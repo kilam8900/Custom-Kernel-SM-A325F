@@ -139,6 +139,7 @@ struct fs_enet_private {
 	cbd_t __iomem *cur_rx;
 	cbd_t __iomem *cur_tx;
 	int tx_free;
+	struct timer_list phy_timer_list;
 	const struct phy_info *phy;
 	u32 msg_enable;
 	struct mii_if_info mii_if;
@@ -190,6 +191,8 @@ void fs_cleanup_bds(struct net_device *dev);
 
 #define DRV_MODULE_NAME		"fs_enet"
 #define PFX DRV_MODULE_NAME	": "
+#define DRV_MODULE_VERSION	"1.1"
+#define DRV_MODULE_RELDATE	"Sep 22, 2014"
 
 /***************************************************************************/
 
@@ -201,7 +204,7 @@ void fs_enet_platform_cleanup(void);
 
 /* access macros */
 #if defined(CONFIG_CPM1)
-/* for a CPM1 __raw_xxx's are sufficient */
+/* for a a CPM1 __raw_xxx's are sufficient */
 #define __cbd_out32(addr, x)	__raw_writel(x, addr)
 #define __cbd_out16(addr, x)	__raw_writew(x, addr)
 #define __cbd_in32(addr)	__raw_readl(addr)

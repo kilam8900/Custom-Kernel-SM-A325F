@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This file contains functions used in USB interface module.
  */
@@ -163,9 +162,9 @@ static void if_usb_setup_firmware(struct lbs_private *priv)
 	}
 }
 
-static void if_usb_fw_timeo(struct timer_list *t)
+static void if_usb_fw_timeo(unsigned long priv)
 {
-	struct if_usb_card *cardp = from_timer(cardp, t, fw_timeout);
+	struct if_usb_card *cardp = (void *)priv;
 
 	if (cardp->fwdnldover) {
 		lbs_deb_usb("Download complete, no event. Assuming success\n");
@@ -207,7 +206,7 @@ static int if_usb_probe(struct usb_interface *intf,
 	if (!cardp)
 		goto error;
 
-	timer_setup(&cardp->fw_timeout, if_usb_fw_timeo, 0);
+	setup_timer(&cardp->fw_timeout, if_usb_fw_timeo, (unsigned long)cardp);
 	init_waitqueue_head(&cardp->fw_wq);
 
 	cardp->udev = udev;
@@ -256,11 +255,8 @@ static int if_usb_probe(struct usb_interface *intf,
 		goto dealloc;
 	}
 
-	priv = lbs_add_card(cardp, &intf->dev);
-	if (IS_ERR(priv)) {
-		r = PTR_ERR(priv);
+	if (!(priv = lbs_add_card(cardp, &intf->dev)))
 		goto err_add_card;
-	}
 
 	cardp->priv = priv;
 
@@ -287,13 +283,11 @@ static int if_usb_probe(struct usb_interface *intf,
 	return 0;
 
 err_get_fw:
-	usb_put_dev(udev);
 	lbs_remove_card(priv);
 err_add_card:
 	if_usb_reset_device(cardp);
 dealloc:
 	if_usb_free(cardp);
-	kfree(cardp);
 
 error:
 	return r;
@@ -318,7 +312,6 @@ static void if_usb_disconnect(struct usb_interface *intf)
 
 	/* Unlink and free urb */
 	if_usb_free(cardp);
-	kfree(cardp);
 
 	usb_set_intfdata(intf, NULL);
 	usb_put_dev(interface_to_usbdev(intf));
@@ -372,7 +365,7 @@ static int if_usb_send_fw_pkt(struct if_usb_card *cardp)
 			     cardp->fwseqnum, cardp->totalbytes);
 	} else if (fwdata->hdr.dnldcmd == cpu_to_le32(FW_HAS_LAST_BLOCK)) {
 		lbs_deb_usb2(&cardp->udev->dev, "Host has finished FW downloading\n");
-		lbs_deb_usb2(&cardp->udev->dev, "Downloading FW JUMP BLOCK\n");
+		lbs_deb_usb2(&cardp->udev->dev, "Donwloading FW JUMP BLOCK\n");
 
 		cardp->fwfinalblk = 1;
 	}
@@ -620,7 +613,6 @@ static inline void process_cmdrequest(int recvlength, uint8_t *recvbuff,
 				      struct if_usb_card *cardp,
 				      struct lbs_private *priv)
 {
-	unsigned long flags;
 	u8 i;
 
 	if (recvlength > LBS_CMD_BUFFER_SIZE) {
@@ -630,17 +622,19 @@ static inline void process_cmdrequest(int recvlength, uint8_t *recvbuff,
 		return;
 	}
 
-	spin_lock_irqsave(&priv->driver_lock, flags);
+	BUG_ON(!in_interrupt());
+
+	spin_lock(&priv->driver_lock);
 
 	i = (priv->resp_idx == 0) ? 1 : 0;
 	BUG_ON(priv->resp_len[i]);
 	priv->resp_len[i] = (recvlength - MESSAGE_HEADER_LEN);
 	memcpy(priv->resp_buf[i], recvbuff + MESSAGE_HEADER_LEN,
 		priv->resp_len[i]);
-	dev_kfree_skb_irq(skb);
+	kfree_skb(skb);
 	lbs_notify_command_response(priv, i);
 
-	spin_unlock_irqrestore(&priv->driver_lock, flags);
+	spin_unlock(&priv->driver_lock);
 
 	lbs_deb_usbd(&cardp->udev->dev,
 		    "Wake up main thread to handle cmd response\n");

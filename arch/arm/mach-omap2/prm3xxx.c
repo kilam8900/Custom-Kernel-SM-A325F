@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP3xxx PRM module functions
  *
@@ -7,6 +6,10 @@
  * Benoît Cousson
  * Paul Walmsley
  * Rajendra Nayak <rnayak@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
@@ -32,7 +35,6 @@ static void omap3xxx_prm_read_pending_irqs(unsigned long *events);
 static void omap3xxx_prm_ocp_barrier(void);
 static void omap3xxx_prm_save_and_clear_irqen(u32 *saved_mask);
 static void omap3xxx_prm_restore_irqen(u32 *saved_mask);
-static void omap3xxx_prm_iva_idle(void);
 
 static const struct omap_prcm_irq omap3_prcm_irqs[] = {
 	OMAP_PRCM_IRQ("wkup",	0,	0),
@@ -269,7 +271,7 @@ static int omap3xxx_prm_clear_mod_irqs(s16 module, u8 regs, u32 wkst_mask)
  * Toggles the reset signal to modem IP block. Required to allow
  * OMAP3430 without stacked modem to idle properly.
  */
-static void __init omap3_prm_reset_modem(void)
+void __init omap3_prm_reset_modem(void)
 {
 	omap2_prm_write_mod_reg(
 		OMAP3430_RM_RSTCTRL_CORE_MODEM_SW_RSTPWRON_MASK |
@@ -470,7 +472,7 @@ static u32 omap3xxx_prm_read_reset_sources(void)
  * function forces the IVA2 into idle state so it can go
  * into retention/off and thus allow full-chip retention/off.
  */
-static void omap3xxx_prm_iva_idle(void)
+void omap3xxx_prm_iva_idle(void)
 {
 	/* ensure IVA2 clock is disabled */
 	omap2_cm_write_mod_reg(0, OMAP3430_IVA2_MOD, CM_FCLKEN);
@@ -702,18 +704,11 @@ static int omap3xxx_prm_late_init(void)
 			omap3430_pre_es3_1_reconfigure_io_chain;
 
 	np = of_find_matching_node(NULL, omap3_prm_dt_match_table);
-	if (!np) {
-		pr_err("PRM: no device tree node for interrupt?\n");
-
-		return -ENODEV;
+	if (np) {
+		irq_num = of_irq_get(np, 0);
+		if (irq_num > 0)
+			omap3_prcm_irq_setup.irq = irq_num;
 	}
-
-	irq_num = of_irq_get(np, 0);
-	of_node_put(np);
-	if (irq_num == -EPROBE_DEFER)
-		return irq_num;
-
-	omap3_prcm_irq_setup.irq = irq_num;
 
 	omap3xxx_prm_enable_io_wakeup();
 

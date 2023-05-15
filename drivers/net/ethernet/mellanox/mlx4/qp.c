@@ -46,13 +46,6 @@
 #define MLX4_BF_QP_SKIP_MASK	0xc0
 #define MLX4_MAX_BF_QP_RANGE	0x40
 
-void mlx4_put_qp(struct mlx4_qp *qp)
-{
-	if (refcount_dec_and_test(&qp->refcount))
-		complete(&qp->free);
-}
-EXPORT_SYMBOL_GPL(mlx4_put_qp);
-
 void mlx4_qp_event(struct mlx4_dev *dev, u32 qpn, int event_type)
 {
 	struct mlx4_qp_table *qp_table = &mlx4_priv(dev)->qp_table;
@@ -62,7 +55,7 @@ void mlx4_qp_event(struct mlx4_dev *dev, u32 qpn, int event_type)
 
 	qp = __mlx4_qp_lookup(dev, qpn);
 	if (qp)
-		refcount_inc(&qp->refcount);
+		atomic_inc(&qp->refcount);
 
 	spin_unlock(&qp_table->lock);
 
@@ -71,8 +64,10 @@ void mlx4_qp_event(struct mlx4_dev *dev, u32 qpn, int event_type)
 		return;
 	}
 
-	/* Need to call mlx4_put_qp() in event handler */
 	qp->event(qp, event_type);
+
+	if (atomic_dec_and_test(&qp->refcount))
+		complete(&qp->free);
 }
 
 /* used for INIT/CLOSE port logic */
@@ -428,7 +423,7 @@ int mlx4_qp_alloc(struct mlx4_dev *dev, int qpn, struct mlx4_qp *qp)
 	if (err)
 		goto err_icm;
 
-	refcount_set(&qp->refcount, 1);
+	atomic_set(&qp->refcount, 1);
 	init_completion(&qp->free);
 
 	return 0;
@@ -528,7 +523,8 @@ EXPORT_SYMBOL_GPL(mlx4_qp_remove);
 
 void mlx4_qp_free(struct mlx4_dev *dev, struct mlx4_qp *qp)
 {
-	mlx4_put_qp(qp);
+	if (atomic_dec_and_test(&qp->refcount))
+		complete(&qp->free);
 	wait_for_completion(&qp->free);
 
 	mlx4_qp_free_icm(dev, qp->qpn);
@@ -701,8 +697,7 @@ static int mlx4_create_zones(struct mlx4_dev *dev,
 			err = mlx4_bitmap_init(*bitmap + k, 1,
 					       MLX4_QP_TABLE_RAW_ETH_SIZE - 1, 0,
 					       0);
-			if (!err)
-				mlx4_bitmap_alloc_range(*bitmap + k, 1, 1, 0);
+			mlx4_bitmap_alloc_range(*bitmap + k, 1, 1, 0);
 		}
 
 		if (err)
@@ -744,7 +739,7 @@ static void mlx4_cleanup_qp_zones(struct mlx4_dev *dev)
 		int i;
 
 		for (i = 0;
-		     i < ARRAY_SIZE(qp_table->zones_uids);
+		     i < sizeof(qp_table->zones_uids)/sizeof(qp_table->zones_uids[0]);
 		     i++) {
 			struct mlx4_bitmap *bitmap =
 				mlx4_zone_get_bitmap(qp_table->zones,
@@ -922,7 +917,7 @@ int mlx4_qp_to_ready(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 {
 	int err;
 	int i;
-	static const enum mlx4_qp_state states[] = {
+	enum mlx4_qp_state states[] = {
 		MLX4_QP_STATE_RST,
 		MLX4_QP_STATE_INIT,
 		MLX4_QP_STATE_RTR,
@@ -933,7 +928,7 @@ int mlx4_qp_to_ready(struct mlx4_dev *dev, struct mlx4_mtt *mtt,
 		context->flags &= cpu_to_be32(~(0xf << 28));
 		context->flags |= cpu_to_be32(states[i + 1] << 28);
 		if (states[i + 1] != MLX4_QP_STATE_RTR)
-			context->params2 &= ~cpu_to_be32(MLX4_QP_BIT_FPP);
+			context->params2 &= ~MLX4_QP_BIT_FPP;
 		err = mlx4_qp_modify(dev, mtt, states[i], states[i + 1],
 				     context, 0, 0, qp);
 		if (err) {

@@ -9,7 +9,6 @@
  */
 
 /dts-v1/;
-#include "vexpress-v2m-rs1.dtsi"
 
 / {
 	model = "V2P-CA15_CA7";
@@ -42,7 +41,7 @@
 			cci-control-port = <&cci_control1>;
 			cpu-idle-states = <&CLUSTER_SLEEP_BIG>;
 			capacity-dmips-mhz = <1024>;
-			dynamic-power-coefficient = <990>;
+			sched-energy-costs = <&CPU_COST_A15 &CLUSTER_COST_A15>;
 		};
 
 		cpu1: cpu@1 {
@@ -52,7 +51,7 @@
 			cci-control-port = <&cci_control1>;
 			cpu-idle-states = <&CLUSTER_SLEEP_BIG>;
 			capacity-dmips-mhz = <1024>;
-			dynamic-power-coefficient = <990>;
+			sched-energy-costs = <&CPU_COST_A15 &CLUSTER_COST_A15>;
 		};
 
 		cpu2: cpu@2 {
@@ -62,7 +61,7 @@
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
 			capacity-dmips-mhz = <516>;
-			dynamic-power-coefficient = <133>;
+			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
 		};
 
 		cpu3: cpu@3 {
@@ -72,7 +71,7 @@
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
 			capacity-dmips-mhz = <516>;
-			dynamic-power-coefficient = <133>;
+			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
 		};
 
 		cpu4: cpu@4 {
@@ -82,7 +81,7 @@
 			cci-control-port = <&cci_control2>;
 			cpu-idle-states = <&CLUSTER_SLEEP_LITTLE>;
 			capacity-dmips-mhz = <516>;
-			dynamic-power-coefficient = <133>;
+			sched-energy-costs = <&CPU_COST_A7 &CLUSTER_COST_A7>;
 		};
 
 		idle-states {
@@ -102,6 +101,77 @@
 				min-residency-us = <2500>;
 			};
 		};
+
+		energy-costs {
+			CPU_COST_A15: core-cost0 {
+				busy-cost-data = <
+					426    2021
+					512    2312
+					597    2756
+					682    3125
+					768    3524
+					853    3846
+					938    5177
+					1024   6997
+				>;
+				idle-cost-data = <
+					0
+					0
+					0
+				>;
+			};
+			CPU_COST_A7: core-cost1 {
+				busy-cost-data = <
+					150    187
+					172    275
+					215    334
+					258    407
+					301    447
+					344    549
+					387    761
+					430    1024
+				>;
+				idle-cost-data = <
+					0
+					0
+					0
+				>;
+			};
+			CLUSTER_COST_A15: cluster-cost0 {
+				busy-cost-data = <
+					426    7920
+					512    8165
+					597    8172
+					682    8195
+					768    8265
+					853    8446
+					938    11426
+					1024   15200
+				>;
+				idle-cost-data = <
+					 70
+					 70
+					 25
+				>;
+			};
+			CLUSTER_COST_A7: cluster-cost1 {
+				busy-cost-data = <
+					150    2967
+					172    2792
+					215    2810
+					258    2815
+					301    2919
+					344    2847
+					387    3917
+					430    4905
+				>;
+				idle-cost-data = <
+					25
+					25
+					10
+				>;
+			};
+		};
 	};
 
 	memory@80000000 {
@@ -109,26 +179,12 @@
 		reg = <0 0x80000000 0 0x40000000>;
 	};
 
-	reserved-memory {
-		#address-cells = <2>;
-		#size-cells = <2>;
-		ranges;
-
-		/* Chipselect 2 is physically at 0x18000000 */
-		vram: vram@18000000 {
-			/* 8 MB of designated video RAM */
-			compatible = "shared-dma-pool";
-			reg = <0 0x18000000 0 0x00800000>;
-			no-map;
-		};
-	};
-
 	wdt@2a490000 {
 		compatible = "arm,sp805", "arm,primecell";
 		reg = <0 0x2a490000 0 0x1000>;
 		interrupts = <0 98 4>;
 		clocks = <&oscclk6a>, <&oscclk6a>;
-		clock-names = "wdog_clk", "apb_pclk";
+		clock-names = "wdogclk", "apb_pclk";
 	};
 
 	hdlcd@2b000000 {
@@ -223,7 +279,7 @@
 			     <1 10 0xf08>;
 	};
 
-	pmu-a15 {
+	pmu_a15 {
 		compatible = "arm,cortex-a15-pmu";
 		interrupts = <0 68 4>,
 			     <0 69 4>;
@@ -231,7 +287,7 @@
 				     <&cpu1>;
 	};
 
-	pmu-a7 {
+	pmu_a7 {
 		compatible = "arm,cortex-a7-pmu";
 		interrupts = <0 128 4>,
 			     <0 129 4>,
@@ -412,11 +468,10 @@
 
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		in-ports {
-			port {
-				etb_in_port: endpoint {
-					remote-endpoint = <&replicator_out_port0>;
-				};
+		port {
+			etb_in_port: endpoint {
+				slave-mode;
+				remote-endpoint = <&replicator_out_port0>;
 			};
 		};
 	};
@@ -427,11 +482,10 @@
 
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		in-ports {
-			port {
-				tpiu_in_port: endpoint {
-					remote-endpoint = <&replicator_out_port1>;
-				};
+		port {
+			tpiu_in_port: endpoint {
+				slave-mode;
+				remote-endpoint = <&replicator_out_port1>;
 			};
 		};
 	};
@@ -440,12 +494,13 @@
 		/* non-configurable replicators don't show up on the
 		 * AMBA bus.  As such no need to add "arm,primecell".
 		 */
-		compatible = "arm,coresight-static-replicator";
+		compatible = "arm,coresight-replicator";
 
-		out-ports {
+		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
 
+			/* replicator output ports */
 			port@0 {
 				reg = <0>;
 				replicator_out_port0: endpoint {
@@ -459,11 +514,12 @@
 					remote-endpoint = <&tpiu_in_port>;
 				};
 			};
-		};
 
-		in-ports {
-			port {
+			/* replicator input port */
+			port@2 {
+				reg = <0>;
 				replicator_in_port0: endpoint {
+					slave-mode;
 					remote-endpoint = <&funnel_out_port0>;
 				};
 			};
@@ -471,41 +527,45 @@
 	};
 
 	funnel@20040000 {
-		compatible = "arm,coresight-dynamic-funnel", "arm,primecell";
+		compatible = "arm,coresight-funnel", "arm,primecell";
 		reg = <0 0x20040000 0 0x1000>;
 
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		out-ports {
-			port {
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			/* funnel output port */
+			port@0 {
+				reg = <0>;
 				funnel_out_port0: endpoint {
 					remote-endpoint =
 						<&replicator_in_port0>;
 				};
 			};
-		};
 
-		in-ports {
-			#address-cells = <1>;
-			#size-cells = <0>;
-
-			port@0 {
+			/* funnel input ports */
+			port@1 {
 				reg = <0>;
 				funnel_in_port0: endpoint {
+					slave-mode;
 					remote-endpoint = <&ptm0_out_port>;
 				};
 			};
 
-			port@1 {
+			port@2 {
 				reg = <1>;
 				funnel_in_port1: endpoint {
+					slave-mode;
 					remote-endpoint = <&ptm1_out_port>;
 				};
 			};
 
-			port@2 {
+			port@3 {
 				reg = <2>;
 				funnel_in_port2: endpoint {
+					slave-mode;
 					remote-endpoint = <&etm0_out_port>;
 				};
 			};
@@ -515,6 +575,7 @@
 			port@4 {
 				reg = <4>;
 				funnel_in_port4: endpoint {
+					slave-mode;
 					remote-endpoint = <&etm1_out_port>;
 				};
 			};
@@ -522,6 +583,7 @@
 			port@5 {
 				reg = <5>;
 				funnel_in_port5: endpoint {
+					slave-mode;
 					remote-endpoint = <&etm2_out_port>;
 				};
 			};
@@ -535,11 +597,9 @@
 		cpu = <&cpu0>;
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		out-ports {
-			port {
-				ptm0_out_port: endpoint {
-					remote-endpoint = <&funnel_in_port0>;
-				};
+		port {
+			ptm0_out_port: endpoint {
+				remote-endpoint = <&funnel_in_port0>;
 			};
 		};
 	};
@@ -551,11 +611,9 @@
 		cpu = <&cpu1>;
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		out-ports {
-			port {
-				ptm1_out_port: endpoint {
-					remote-endpoint = <&funnel_in_port1>;
-				};
+		port {
+			ptm1_out_port: endpoint {
+				remote-endpoint = <&funnel_in_port1>;
 			};
 		};
 	};
@@ -567,11 +625,9 @@
 		cpu = <&cpu2>;
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		out-ports {
-			port {
-				etm0_out_port: endpoint {
-					remote-endpoint = <&funnel_in_port2>;
-				};
+		port {
+			etm0_out_port: endpoint {
+				remote-endpoint = <&funnel_in_port2>;
 			};
 		};
 	};
@@ -583,11 +639,9 @@
 		cpu = <&cpu3>;
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		out-ports {
-			port {
-				etm1_out_port: endpoint {
-					remote-endpoint = <&funnel_in_port4>;
-				};
+		port {
+			etm1_out_port: endpoint {
+				remote-endpoint = <&funnel_in_port4>;
 			};
 		};
 	};
@@ -599,17 +653,72 @@
 		cpu = <&cpu4>;
 		clocks = <&oscclk6a>;
 		clock-names = "apb_pclk";
-		out-ports {
-			port {
-				etm2_out_port: endpoint {
-					remote-endpoint = <&funnel_in_port5>;
-				};
+		port {
+			etm2_out_port: endpoint {
+				remote-endpoint = <&funnel_in_port5>;
 			};
 		};
 	};
 
-	smb: bus@8000000 {
-		ranges = <0x8000000 0 0x8000000 0x18000000>;
+	smb@8000000 {
+		compatible = "simple-bus";
+
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges = <0 0 0 0x08000000 0x04000000>,
+			 <1 0 0 0x14000000 0x04000000>,
+			 <2 0 0 0x18000000 0x04000000>,
+			 <3 0 0 0x1c000000 0x04000000>,
+			 <4 0 0 0x0c000000 0x04000000>,
+			 <5 0 0 0x10000000 0x04000000>;
+
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 63>;
+		interrupt-map = <0 0  0 &gic 0  0 4>,
+				<0 0  1 &gic 0  1 4>,
+				<0 0  2 &gic 0  2 4>,
+				<0 0  3 &gic 0  3 4>,
+				<0 0  4 &gic 0  4 4>,
+				<0 0  5 &gic 0  5 4>,
+				<0 0  6 &gic 0  6 4>,
+				<0 0  7 &gic 0  7 4>,
+				<0 0  8 &gic 0  8 4>,
+				<0 0  9 &gic 0  9 4>,
+				<0 0 10 &gic 0 10 4>,
+				<0 0 11 &gic 0 11 4>,
+				<0 0 12 &gic 0 12 4>,
+				<0 0 13 &gic 0 13 4>,
+				<0 0 14 &gic 0 14 4>,
+				<0 0 15 &gic 0 15 4>,
+				<0 0 16 &gic 0 16 4>,
+				<0 0 17 &gic 0 17 4>,
+				<0 0 18 &gic 0 18 4>,
+				<0 0 19 &gic 0 19 4>,
+				<0 0 20 &gic 0 20 4>,
+				<0 0 21 &gic 0 21 4>,
+				<0 0 22 &gic 0 22 4>,
+				<0 0 23 &gic 0 23 4>,
+				<0 0 24 &gic 0 24 4>,
+				<0 0 25 &gic 0 25 4>,
+				<0 0 26 &gic 0 26 4>,
+				<0 0 27 &gic 0 27 4>,
+				<0 0 28 &gic 0 28 4>,
+				<0 0 29 &gic 0 29 4>,
+				<0 0 30 &gic 0 30 4>,
+				<0 0 31 &gic 0 31 4>,
+				<0 0 32 &gic 0 32 4>,
+				<0 0 33 &gic 0 33 4>,
+				<0 0 34 &gic 0 34 4>,
+				<0 0 35 &gic 0 35 4>,
+				<0 0 36 &gic 0 36 4>,
+				<0 0 37 &gic 0 37 4>,
+				<0 0 38 &gic 0 38 4>,
+				<0 0 39 &gic 0 39 4>,
+				<0 0 40 &gic 0 40 4>,
+				<0 0 41 &gic 0 41 4>,
+				<0 0 42 &gic 0 42 4>;
+
+		/include/ "vexpress-v2m-rs1.dtsi"
 	};
 
 	site2: hsb@40000000 {
@@ -624,13 +733,4 @@
 				<0 2 &gic 0 38 4>,
 				<0 3 &gic 0 39 4>;
 	};
-};
-
-&nor_flash {
-	/*
-	 * Unfortunately, accessing the flash disturbs the CPU idle states
-	 * (suspend) and CPU hotplug of this platform. For this reason, flash
-	 * hardware access is disabled by default on this platform alone.
-	 */
-	status = "disabled";
 };

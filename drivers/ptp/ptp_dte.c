@@ -1,10 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
-// Copyright 2017 Broadcom
+/*
+ * Copyright 2017 Broadcom
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/types.h>
@@ -134,9 +143,8 @@ static s64 dte_read_nco_with_ovf(struct ptp_dte *ptp_dte)
 	return ns;
 }
 
-static int ptp_dte_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
+static int ptp_dte_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 {
-	s32 ppb = scaled_ppm_to_ppb(scaled_ppm);
 	u32 nco_incr;
 	unsigned long flags;
 	struct ptp_dte *ptp_dte = container_of(ptp, struct ptp_dte, caps);
@@ -220,7 +228,7 @@ static const struct ptp_clock_info ptp_dte_caps = {
 	.n_ext_ts	= 0,
 	.n_pins		= 0,
 	.pps		= 0,
-	.adjfine	= ptp_dte_adjfine,
+	.adjfreq	= ptp_dte_adjfreq,
 	.adjtime	= ptp_dte_adjtime,
 	.gettime64	= ptp_dte_gettime,
 	.settime64	= ptp_dte_settime,
@@ -231,14 +239,19 @@ static int ptp_dte_probe(struct platform_device *pdev)
 {
 	struct ptp_dte *ptp_dte;
 	struct device *dev = &pdev->dev;
+	struct resource *res;
 
 	ptp_dte = devm_kzalloc(dev, sizeof(struct ptp_dte), GFP_KERNEL);
 	if (!ptp_dte)
 		return -ENOMEM;
 
-	ptp_dte->regs = devm_platform_ioremap_resource(pdev, 0);
-	if (IS_ERR(ptp_dte->regs))
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ptp_dte->regs = devm_ioremap_resource(dev, res);
+	if (IS_ERR(ptp_dte->regs)) {
+		dev_err(dev,
+			"%s: io remap failed\n", __func__);
 		return PTR_ERR(ptp_dte->regs);
+	}
 
 	spin_lock_init(&ptp_dte->lock);
 
@@ -274,7 +287,8 @@ static int ptp_dte_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM_SLEEP
 static int ptp_dte_suspend(struct device *dev)
 {
-	struct ptp_dte *ptp_dte = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct ptp_dte *ptp_dte = platform_get_drvdata(pdev);
 	u8 i;
 
 	for (i = 0; i < DTE_NUM_REGS_TO_RESTORE; i++) {
@@ -290,7 +304,8 @@ static int ptp_dte_suspend(struct device *dev)
 
 static int ptp_dte_resume(struct device *dev)
 {
-	struct ptp_dte *ptp_dte = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct ptp_dte *ptp_dte = platform_get_drvdata(pdev);
 	u8 i;
 
 	for (i = 0; i < DTE_NUM_REGS_TO_RESTORE; i++) {

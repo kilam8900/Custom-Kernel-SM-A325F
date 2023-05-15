@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * lp5523.c - LP5523, LP55231 LED Driver
  *
@@ -7,6 +6,20 @@
  *
  * Contact: Samu Onkalo <samu.p.onkalo@nokia.com>
  *          Milo(Woogyom) Kim <milo.kim@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
+ * 02110-1301 USA
  */
 
 #include <linux/delay.h>
@@ -23,13 +36,13 @@
 
 #define LP5523_PROGRAM_LENGTH		32	/* bytes */
 /* Memory is used like this:
- * 0x00 engine 1 program
- * 0x10 engine 2 program
- * 0x20 engine 3 program
- * 0x30 engine 1 muxing info
- * 0x40 engine 2 muxing info
- * 0x50 engine 3 muxing info
- */
+   0x00 engine 1 program
+   0x10 engine 2 program
+   0x20 engine 3 program
+   0x30 engine 1 muxing info
+   0x40 engine 2 muxing info
+   0x50 engine 3 muxing info
+*/
 #define LP5523_MAX_LEDS			9
 
 /* Registers */
@@ -307,12 +320,12 @@ static int lp5523_init_program_engine(struct lp55xx_chip *chip)
 	usleep_range(3000, 6000);
 	ret = lp55xx_read(chip, LP5523_REG_STATUS, &status);
 	if (ret)
-		goto out;
+		return ret;
 	status &= LP5523_ENG_STATUS_MASK;
 
 	if (status != LP5523_ENG_STATUS_MASK) {
 		dev_err(&chip->cl->dev,
-			"could not configure LED engine, status = 0x%.2x\n",
+			"cound not configure LED engine, status = 0x%.2x\n",
 			status);
 		ret = -1;
 	}
@@ -326,7 +339,7 @@ static int lp5523_update_program_memory(struct lp55xx_chip *chip,
 					const u8 *data, size_t size)
 {
 	u8 pattern[LP5523_PROGRAM_LENGTH] = {0};
-	unsigned int cmd;
+	unsigned cmd;
 	char c[3];
 	int nrchars;
 	int ret;
@@ -468,7 +481,6 @@ static int lp5523_mux_parse(const char *buf, u16 *mux, size_t len)
 static void lp5523_mux_to_array(u16 led_mux, char *array)
 {
 	int i, pos = 0;
-
 	for (i = 0; i < LP5523_MAX_LEDS; i++)
 		pos += sprintf(array + pos, "%x", LED_ACTIVE(led_mux, i));
 
@@ -507,7 +519,7 @@ static int lp5523_load_mux(struct lp55xx_chip *chip, u16 mux, int nr)
 	if (ret)
 		return ret;
 
-	ret = lp55xx_write(chip, LP5523_REG_PROG_MEM, (u8)(mux >> 8));
+	ret = lp55xx_write(chip, LP5523_REG_PROG_MEM , (u8)(mux >> 8));
 	if (ret)
 		return ret;
 
@@ -581,8 +593,8 @@ static ssize_t lp5523_selftest(struct device *dev,
 	struct lp55xx_led *led = i2c_get_clientdata(to_i2c_client(dev));
 	struct lp55xx_chip *chip = led->chip;
 	struct lp55xx_platform_data *pdata = chip->pdata;
-	int ret, pos = 0;
-	u8 status, adc, vdd, i;
+	int i, ret, pos = 0;
+	u8 status, adc, vdd;
 
 	mutex_lock(&chip->lock);
 
@@ -612,21 +624,20 @@ static ssize_t lp5523_selftest(struct device *dev,
 
 	vdd--;	/* There may be some fluctuation in measurement */
 
-	for (i = 0; i < pdata->num_channels; i++) {
-		/* Skip disabled channels */
+	for (i = 0; i < LP5523_MAX_LEDS; i++) {
+		/* Skip non-existing channels */
 		if (pdata->led_config[i].led_current == 0)
 			continue;
 
 		/* Set default current */
-		lp55xx_write(chip, LP5523_REG_LED_CURRENT_BASE + led->chan_nr,
+		lp55xx_write(chip, LP5523_REG_LED_CURRENT_BASE + i,
 			pdata->led_config[i].led_current);
 
-		lp55xx_write(chip, LP5523_REG_LED_PWM_BASE + led->chan_nr,
-			     0xff);
+		lp55xx_write(chip, LP5523_REG_LED_PWM_BASE + i, 0xff);
 		/* let current stabilize 2 - 4ms before measurements start */
 		usleep_range(2000, 4000);
 		lp55xx_write(chip, LP5523_REG_LED_TEST_CTRL,
-			     LP5523_EN_LEDTEST | led->chan_nr);
+			     LP5523_EN_LEDTEST | i);
 		/* ADC conversion time is 2.7 ms typically */
 		usleep_range(3000, 6000);
 		ret = lp55xx_read(chip, LP5523_REG_STATUS, &status);
@@ -634,22 +645,20 @@ static ssize_t lp5523_selftest(struct device *dev,
 			goto fail;
 
 		if (!(status & LP5523_LEDTEST_DONE))
-			usleep_range(3000, 6000); /* Was not ready. Wait. */
+			usleep_range(3000, 6000);/* Was not ready. Wait. */
 
 		ret = lp55xx_read(chip, LP5523_REG_LED_TEST_ADC, &adc);
 		if (ret < 0)
 			goto fail;
 
 		if (adc >= vdd || adc < LP5523_ADC_SHORTCIRC_LIM)
-			pos += sprintf(buf + pos, "LED %d FAIL\n",
-				       led->chan_nr);
+			pos += sprintf(buf + pos, "LED %d FAIL\n", i);
 
-		lp55xx_write(chip, LP5523_REG_LED_PWM_BASE + led->chan_nr,
-			     0x00);
+		lp55xx_write(chip, LP5523_REG_LED_PWM_BASE + i, 0x00);
 
 		/* Restore current */
-		lp55xx_write(chip, LP5523_REG_LED_CURRENT_BASE + led->chan_nr,
-			     led->led_current);
+		lp55xx_write(chip, LP5523_REG_LED_CURRENT_BASE + i,
+			led->led_current);
 		led++;
 	}
 	if (pos == 0)
@@ -795,25 +804,6 @@ leave:
 	return ret;
 }
 
-static int lp5523_multicolor_brightness(struct lp55xx_led *led)
-{
-	struct lp55xx_chip *chip = led->chip;
-	int ret;
-	int i;
-
-	mutex_lock(&chip->lock);
-	for (i = 0; i < led->mc_cdev.num_colors; i++) {
-		ret = lp55xx_write(chip,
-				   LP5523_REG_LED_PWM_BASE +
-				   led->mc_cdev.subled_info[i].channel,
-				   led->mc_cdev.subled_info[i].brightness);
-		if (ret)
-			break;
-	}
-	mutex_unlock(&chip->lock);
-	return ret;
-}
-
 static int lp5523_led_brightness(struct lp55xx_led *led)
 {
 	struct lp55xx_chip *chip = led->chip;
@@ -880,32 +870,24 @@ static struct lp55xx_device_config lp5523_cfg = {
 	.max_channel  = LP5523_MAX_LEDS,
 	.post_init_device   = lp5523_post_init_device,
 	.brightness_fn      = lp5523_led_brightness,
-	.multicolor_brightness_fn = lp5523_multicolor_brightness,
 	.set_led_current    = lp5523_set_led_current,
 	.firmware_cb        = lp5523_firmware_loaded,
 	.run_engine         = lp5523_run_engine,
 	.dev_attr_group     = &lp5523_group,
 };
 
-static int lp5523_probe(struct i2c_client *client)
+static int lp5523_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	int ret;
 	struct lp55xx_chip *chip;
 	struct lp55xx_led *led;
 	struct lp55xx_platform_data *pdata = dev_get_platdata(&client->dev);
-	struct device_node *np = dev_of_node(&client->dev);
-
-	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
-	if (!chip)
-		return -ENOMEM;
-
-	chip->cfg = &lp5523_cfg;
+	struct device_node *np = client->dev.of_node;
 
 	if (!pdata) {
 		if (np) {
-			pdata = lp55xx_of_populate_pdata(&client->dev, np,
-							 chip);
+			pdata = lp55xx_of_populate_pdata(&client->dev, np);
 			if (IS_ERR(pdata))
 				return PTR_ERR(pdata);
 		} else {
@@ -914,13 +896,18 @@ static int lp5523_probe(struct i2c_client *client)
 		}
 	}
 
-	led = devm_kcalloc(&client->dev,
-			pdata->num_channels, sizeof(*led), GFP_KERNEL);
+	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
+	if (!chip)
+		return -ENOMEM;
+
+	led = devm_kzalloc(&client->dev,
+			sizeof(*led) * pdata->num_channels, GFP_KERNEL);
 	if (!led)
 		return -ENOMEM;
 
 	chip->cl = client;
 	chip->pdata = pdata;
+	chip->cfg = &lp5523_cfg;
 
 	mutex_init(&chip->lock);
 
@@ -934,30 +921,35 @@ static int lp5523_probe(struct i2c_client *client)
 
 	ret = lp55xx_register_leds(led, chip);
 	if (ret)
-		goto err_out;
+		goto err_register_leds;
 
 	ret = lp55xx_register_sysfs(chip);
 	if (ret) {
 		dev_err(&client->dev, "registering sysfs failed\n");
-		goto err_out;
+		goto err_register_sysfs;
 	}
 
 	return 0;
 
-err_out:
+err_register_sysfs:
+	lp55xx_unregister_leds(led, chip);
+err_register_leds:
 	lp55xx_deinit_device(chip);
 err_init:
 	return ret;
 }
 
-static void lp5523_remove(struct i2c_client *client)
+static int lp5523_remove(struct i2c_client *client)
 {
 	struct lp55xx_led *led = i2c_get_clientdata(client);
 	struct lp55xx_chip *chip = led->chip;
 
 	lp5523_stop_all_engines(chip);
 	lp55xx_unregister_sysfs(chip);
+	lp55xx_unregister_leds(led, chip);
 	lp55xx_deinit_device(chip);
+
+	return 0;
 }
 
 static const struct i2c_device_id lp5523_id[] = {
@@ -983,7 +975,7 @@ static struct i2c_driver lp5523_driver = {
 		.name	= "lp5523x",
 		.of_match_table = of_match_ptr(of_lp5523_leds_match),
 	},
-	.probe_new	= lp5523_probe,
+	.probe		= lp5523_probe,
 	.remove		= lp5523_remove,
 	.id_table	= lp5523_id,
 };

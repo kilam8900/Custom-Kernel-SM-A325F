@@ -1,19 +1,22 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/mm/proc-v7.S
  *
  *  Copyright (C) 2001 Deep Blue Solutions Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  *  This is the "shell" of the ARMv7 processor support.
  */
 #include <linux/arm-smccc.h>
 #include <linux/init.h>
 #include <linux/linkage.h>
-#include <linux/pgtable.h>
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
 #include <asm/hwcap.h>
 #include <asm/pgtable-hwdef.h>
+#include <asm/pgtable.h>
 #include <asm/memory.h>
 
 #include "proc-macros.S"
@@ -23,8 +26,6 @@
 #else
 #include "proc-v7-2level.S"
 #endif
-
-.arch armv7-a
 
 ENTRY(cpu_v7_proc_init)
 	ret	lr
@@ -258,20 +259,6 @@ ENDPROC(cpu_pj4b_do_resume)
 
 #endif
 
-	@
-	@ Invoke the v7_invalidate_l1() function, which adheres to the AAPCS
-	@ rules, and so it may corrupt registers that we need to preserve.
-	@
-	.macro	do_invalidate_l1
-	mov	r6, r1
-	mov	r7, r2
-	mov	r10, lr
-	bl	v7_invalidate_l1		@ corrupts {r0-r3, ip, lr}
-	mov	r1, r6
-	mov	r2, r7
-	mov	lr, r10
-	.endm
-
 /*
  *	__v7_setup
  *
@@ -292,8 +279,6 @@ ENDPROC(cpu_pj4b_do_resume)
 __v7_ca5mp_setup:
 __v7_ca9mp_setup:
 __v7_cr7mp_setup:
-__v7_cr8mp_setup:
-	do_invalidate_l1
 	mov	r10, #(1 << 0)			@ Cache/TLB ops broadcasting
 	b	1f
 __v7_ca7mp_setup:
@@ -301,9 +286,13 @@ __v7_ca12mp_setup:
 __v7_ca15mp_setup:
 __v7_b15mp_setup:
 __v7_ca17mp_setup:
-	do_invalidate_l1
 	mov	r10, #0
-1:
+1:	adr	r0, __v7_setup_stack_ptr
+	ldr	r12, [r0]
+	add	r12, r12, r0			@ the local stack
+	stmia	r12, {r1-r6, lr}		@ v7_invalidate_l1 touches r0-r6
+	bl      v7_invalidate_l1
+	ldmia	r12, {r1-r6, lr}
 #ifdef CONFIG_SMP
 	orr	r10, r10, #(1 << 6)		@ Enable SMP/nAMP mode
 	ALT_SMP(mrc	p15, 0, r0, c1, c0, 1)
@@ -402,11 +391,6 @@ __ca12_errata:
 	orr	r10, r10, #1 << 24		@ set bit #24
 	mcr	p15, 0, r10, c15, c0, 1		@ write diagnostic register
 #endif
-#ifdef CONFIG_ARM_ERRATA_857271
-	mrc	p15, 0, r10, c15, c0, 1		@ read diagnostic register
-	orr	r10, r10, #3 << 10		@ set bits #10 and #11
-	mcr	p15, 0, r10, c15, c0, 1		@ write diagnostic register
-#endif
 	b	__errata_finish
 
 __ca17_errata:
@@ -421,11 +405,6 @@ __ca17_errata:
 	mrcle	p15, 0, r10, c15, c0, 1		@ read diagnostic register
 	orrle	r10, r10, #1 << 12		@ set bit #12
 	mcrle	p15, 0, r10, c15, c0, 1		@ write diagnostic register
-#endif
-#ifdef CONFIG_ARM_ERRATA_857272
-	mrc	p15, 0, r10, c15, c0, 1		@ read diagnostic register
-	orr	r10, r10, #3 << 10		@ set bits #10 and #11
-	mcr	p15, 0, r10, c15, c0, 1		@ write diagnostic register
 #endif
 	b	__errata_finish
 
@@ -484,7 +463,12 @@ __v7_pj4b_setup:
 #endif /* CONFIG_CPU_PJ4B */
 
 __v7_setup:
-	do_invalidate_l1
+	adr	r0, __v7_setup_stack_ptr
+	ldr	r12, [r0]
+	add	r12, r12, r0			@ the local stack
+	stmia	r12, {r1-r6, lr}		@ v7_invalidate_l1 touches r0-r6
+	bl      v7_invalidate_l1
+	ldmia	r12, {r1-r6, lr}
 
 __v7_setup_cont:
 	and	r0, r9, #0xff000000		@ ARM?
@@ -556,7 +540,16 @@ __errata_finish:
 	orr	r0, r0, r6			@ set them
  THUMB(	orr	r0, r0, #1 << 30	)	@ Thumb exceptions
 	ret	lr				@ return to head.S:__ret
+
+	.align	2
+__v7_setup_stack_ptr:
+	.word	PHYS_RELATIVE(__v7_setup_stack, .)
 ENDPROC(__v7_setup)
+
+	.bss
+	.align	2
+__v7_setup_stack:
+	.space	4 * 7				@ 7 registers
 
 	__INITDATA
 
@@ -643,12 +636,12 @@ ENDPROC(__v7_setup)
 	string	cpu_elf_name, "v7"
 	.align
 
-	.section ".proc.info.init", "a"
+	.section ".proc.info.init", #alloc
 
 	/*
 	 * Standard v7 proc info content
 	 */
-.macro __v7_proc name, initfunc, mm_mmuflags = 0, io_mmuflags = 0, hwcaps = 0, proc_fns = v7_processor_functions, cache_fns = v7_cache_fns
+.macro __v7_proc name, initfunc, mm_mmuflags = 0, io_mmuflags = 0, hwcaps = 0, proc_fns = v7_processor_functions
 	ALT_SMP(.long	PMD_TYPE_SECT | PMD_SECT_AP_WRITE | PMD_SECT_AP_READ | \
 			PMD_SECT_AF | PMD_FLAGS_SMP | \mm_mmuflags)
 	ALT_UP(.long	PMD_TYPE_SECT | PMD_SECT_AP_WRITE | PMD_SECT_AP_READ | \
@@ -664,7 +657,7 @@ ENDPROC(__v7_setup)
 	.long	\proc_fns
 	.long	v7wbi_tlb_fns
 	.long	v6_user_fns
-	.long	\cache_fns
+	.long	v7_cache_fns
 .endm
 
 #ifndef CONFIG_ARM_LPAE
@@ -723,16 +716,6 @@ __v7_cr7mp_proc_info:
 	.size	__v7_cr7mp_proc_info, . - __v7_cr7mp_proc_info
 
 	/*
-	 * ARM Ltd. Cortex R8 processor.
-	 */
-	.type	__v7_cr8mp_proc_info, #object
-__v7_cr8mp_proc_info:
-	.long	0x410fc180
-	.long	0xff0ffff0
-	__v7_proc __v7_cr8mp_proc_info, __v7_cr8mp_setup
-	.size	__v7_cr8mp_proc_info, . - __v7_cr8mp_proc_info
-
-	/*
 	 * ARM Ltd. Cortex A7 processor.
 	 */
 	.type	__v7_ca7mp_proc_info, #object
@@ -769,7 +752,7 @@ __v7_ca15mp_proc_info:
 __v7_b15mp_proc_info:
 	.long	0x420f00f0
 	.long	0xff0ffff0
-	__v7_proc __v7_b15mp_proc_info, __v7_b15mp_setup, proc_fns = ca15_processor_functions, cache_fns = b15_cache_fns
+	__v7_proc __v7_b15mp_proc_info, __v7_b15mp_setup, proc_fns = ca15_processor_functions
 	.size	__v7_b15mp_proc_info, . - __v7_b15mp_proc_info
 
 	/*

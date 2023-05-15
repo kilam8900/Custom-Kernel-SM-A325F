@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * MXC6255 - MEMSIC orientation sensing accelerometer
  *
  * Copyright (c) 2015, Intel Corporation.
+ *
+ * This file is subject to the terms and conditions of version 2 of
+ * the GNU General Public License.  See the file COPYING in the main
+ * directory of this archive for more details.
  *
  * IIO driver for MXC6255 (7-bit I2C slave address 0x15).
  */
@@ -75,6 +78,7 @@ static int mxc6255_read_raw(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info mxc6255_info = {
+	.driver_module	= THIS_MODULE,
 	.read_raw	= mxc6255_read_raw,
 };
 
@@ -113,7 +117,8 @@ static const struct regmap_config mxc6255_regmap_config = {
 	.readable_reg = mxc6255_is_readable_reg,
 };
 
-static int mxc6255_probe(struct i2c_client *client)
+static int mxc6255_probe(struct i2c_client *client,
+			 const struct i2c_device_id *id)
 {
 	struct mxc6255_data *data;
 	struct iio_dev *indio_dev;
@@ -137,6 +142,7 @@ static int mxc6255_probe(struct i2c_client *client)
 	data->regmap = regmap;
 
 	indio_dev->name = MXC6255_DRV_NAME;
+	indio_dev->dev.parent = &client->dev;
 	indio_dev->channels = mxc6255_channels;
 	indio_dev->num_channels = ARRAY_SIZE(mxc6255_channels);
 	indio_dev->modes = INDIO_DIRECT_MODE;
@@ -183,7 +189,7 @@ static struct i2c_driver mxc6255_driver = {
 		.name = MXC6255_DRV_NAME,
 		.acpi_match_table = ACPI_PTR(mxc6255_acpi_match),
 	},
-	.probe_new	= mxc6255_probe,
+	.probe		= mxc6255_probe,
 	.id_table	= mxc6255_id,
 };
 

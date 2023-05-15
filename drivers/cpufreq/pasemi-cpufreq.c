@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2007 PA Semi, Inc
  *
@@ -9,6 +8,21 @@
  *
  * Based on arch/powerpc/platforms/cell/cbe_cpufreq.c:
  * (C) Copyright IBM Deutschland Entwicklung GmbH 2005
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
  */
 
 #include <linux/cpufreq.h>
@@ -18,10 +32,9 @@
 
 #include <asm/hw_irq.h>
 #include <asm/io.h>
+#include <asm/prom.h>
 #include <asm/time.h>
 #include <asm/smp.h>
-
-#include <platforms/pasemi/pasemi.h>
 
 #define SDCASR_REG		0x0100
 #define SDCASR_REG_STRIDE	0x1000
@@ -126,7 +139,7 @@ static int pas_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	struct cpufreq_frequency_table *pos;
 	const u32 *max_freqp;
 	u32 max_freq;
-	int cur_astate, idx;
+	int cur_astate;
 	struct resource res;
 	struct device_node *cpu, *dn;
 	int err = -ENODEV;
@@ -184,9 +197,9 @@ static int pas_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	pr_debug("initializing frequency table\n");
 
 	/* initialize frequency table */
-	cpufreq_for_each_entry_idx(pos, pas_freqs, idx) {
+	cpufreq_for_each_entry(pos, pas_freqs) {
 		pos->frequency = get_astate_freq(pos->driver_data) * 100000;
-		pr_debug("%d: %d\n", idx, pos->frequency);
+		pr_debug("%d: %d\n", (int)(pos - pas_freqs), pos->frequency);
 	}
 
 	cur_astate = get_cur_astate(policy->cpu);
@@ -195,8 +208,7 @@ static int pas_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	policy->cur = pas_freqs[cur_astate].frequency;
 	ppc_proc_freq = policy->cur * 1000ul;
 
-	cpufreq_generic_init(policy, pas_freqs, get_gizmo_latency());
-	return 0;
+	return cpufreq_generic_init(policy, pas_freqs, get_gizmo_latency());
 
 out_unmap_sdcasr:
 	iounmap(sdcasr_mapbase);

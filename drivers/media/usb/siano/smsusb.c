@@ -1,10 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /****************************************************************
 
 Siano Mobile Silicon, Inc.
 MDTV receiver kernel modules.
 Copyright (C) 2005-2009, Uri Shkolnik, Anatoly Greenblat
 
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 2 of the License, or
+(at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 ****************************************************************/
 
@@ -50,7 +61,7 @@ struct smsusb_device_t {
 	struct usb_device *udev;
 	struct smscore_device_t *coredev;
 
-	struct smsusb_urb_t	surbs[MAX_URBS];
+	struct smsusb_urb_t 	surbs[MAX_URBS];
 
 	int		response_alignment;
 	int		buffer_size;
@@ -63,8 +74,8 @@ struct smsusb_device_t {
 static int smsusb_submit_urb(struct smsusb_device_t *dev,
 			     struct smsusb_urb_t *surb);
 
-/*
- * Completing URB's callback handler - bottom half (process context)
+/**
+ * Completing URB's callback handler - bottom half (proccess context)
  * submits the URB prepared on smsusb_onresponse()
  */
 static void do_submit_urb(struct work_struct *work)
@@ -75,7 +86,7 @@ static void do_submit_urb(struct work_struct *work)
 	smsusb_submit_urb(dev, surb);
 }
 
-/*
+/**
  * Completing URB's callback handler - top half (interrupt context)
  * adds completing sms urb to the global surbs list and activtes the worker
  * thread the surb
@@ -168,7 +179,8 @@ static int smsusb_submit_urb(struct smsusb_device_t *dev,
 		smsusb_onresponse,
 		surb
 	);
-	surb->urb.transfer_flags |= URB_FREE_BUFFER;
+	surb->urb.transfer_dma = surb->cb->phys;
+	surb->urb.transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
 	return usb_submit_urb(&surb->urb, GFP_ATOMIC);
 }
@@ -179,7 +191,6 @@ static void smsusb_stop_streaming(struct smsusb_device_t *dev)
 
 	for (i = 0; i < MAX_URBS; i++) {
 		usb_kill_urb(&dev->surbs[i].urb);
-		cancel_work_sync(&dev->surbs[i].wq);
 
 		if (dev->surbs[i].cb) {
 			smscore_putbuffer(dev->coredev, dev->surbs[i].cb);
@@ -215,9 +226,10 @@ static int smsusb_sendrequest(void *context, void *buffer, size_t size)
 		return -ENOENT;
 	}
 
-	phdr = kmemdup(buffer, size, GFP_KERNEL);
+	phdr = kmalloc(size, GFP_KERNEL);
 	if (!phdr)
 		return -ENOMEM;
+	memcpy(phdr, buffer, size);
 
 	pr_debug("sending %s(%d) size: %d\n",
 		  smscore_translate_msg(phdr->msg_type), phdr->msg_type,
@@ -431,7 +443,7 @@ static int smsusb_init_device(struct usb_interface *intf, int board_id)
 		break;
 	case SMS_UNKNOWN_TYPE:
 		pr_err("Unspecified sms device type!\n");
-		fallthrough;
+		/* fall-thru */
 	default:
 		dev->buffer_size = USB2_BUFFER_SIZE;
 		dev->response_alignment = align;
@@ -441,7 +453,6 @@ static int smsusb_init_device(struct usb_interface *intf, int board_id)
 	}
 
 	params.device = &dev->udev->dev;
-	params.usb_device = dev->udev;
 	params.buffer_size = dev->buffer_size;
 	params.num_buffers = MAX_BUFFERS;
 	params.sendrequest_handler = smsusb_sendrequest;
@@ -451,7 +462,7 @@ static int smsusb_init_device(struct usb_interface *intf, int board_id)
 	mdev = siano_media_device_register(dev, board_id);
 
 	/* register in smscore */
-	rc = smscore_register_device(&params, &dev->coredev, 0, mdev);
+	rc = smscore_register_device(&params, &dev->coredev, mdev);
 	if (rc < 0) {
 		pr_err("smscore_register_device(...) failed, rc %d\n", rc);
 		smsusb_term_device(intf);
@@ -662,6 +673,10 @@ static const struct usb_device_id smsusb_id_table[] = {
 		.driver_info = SMS1XXX_BOARD_HAUPPAUGE_WINDHAM },
 	{ USB_DEVICE(0x2040, 0x5590),
 		.driver_info = SMS1XXX_BOARD_HAUPPAUGE_WINDHAM },
+	{ USB_DEVICE(0x187f, 0x0202),
+		.driver_info = SMS1XXX_BOARD_SIANO_NICE },
+	{ USB_DEVICE(0x187f, 0x0301),
+		.driver_info = SMS1XXX_BOARD_SIANO_VENICE },
 	{ USB_DEVICE(0x2040, 0xb900),
 		.driver_info = SMS1XXX_BOARD_HAUPPAUGE_WINDHAM },
 	{ USB_DEVICE(0x2040, 0xb910),

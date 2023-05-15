@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Core of the accelerated CRC algorithm.
  * In your file, define the constants and CRC_FUNCTION_NAME
@@ -19,9 +18,14 @@
  * We then use fixed point Barrett reduction to compute a mod n over GF(2)
  * for n = CRC using POWER8 instructions. We use x = 32.
  *
- * https://en.wikipedia.org/wiki/Barrett_reduction
+ * http://en.wikipedia.org/wiki/Barrett_reduction
  *
  * Copyright (C) 2015 Anton Blanchard <anton@au.ibm.com>, IBM
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version.
 */
 
 #include <asm/ppc_asm.h>
@@ -113,7 +117,9 @@ FUNC_START(CRC_FUNCTION_NAME)
 #endif
 
 #ifdef BYTESWAP_DATA
-	LOAD_REG_ADDR(r3, .byteswap_constant)
+	addis	r3,r2,.byteswap_constant@toc@ha
+	addi	r3,r3,.byteswap_constant@toc@l
+
 	lvx	byteswap,0,r3
 	addi	r3,r3,16
 #endif
@@ -148,7 +154,8 @@ FUNC_START(CRC_FUNCTION_NAME)
 	addi	r7,r7,-1
 	mtctr	r7
 
-	LOAD_REG_ADDR(r3, .constants)
+	addis	r3,r2,.constants@toc@ha
+	addi	r3,r3,.constants@toc@l
 
 	/* Find the start of our constants */
 	add	r3,r3,r8
@@ -503,7 +510,8 @@ FUNC_START(CRC_FUNCTION_NAME)
 
 .Lbarrett_reduction:
 	/* Barrett constants */
-	LOAD_REG_ADDR(r3, .barrett_constants)
+	addis	r3,r2,.barrett_constants@toc@ha
+	addi	r3,r3,.barrett_constants@toc@l
 
 	lvx	const1,0,r3
 	lvx	const2,off16,r3
@@ -606,7 +614,8 @@ FUNC_START(CRC_FUNCTION_NAME)
 	cmpdi	r5,0
 	beq	.Lzero
 
-	LOAD_REG_ADDR(r3, .short_constants)
+	addis	r3,r2,.short_constants@toc@ha
+	addi	r3,r3,.short_constants@toc@l
 
 	/* Calculate where in the constant table we need to start */
 	subfic	r6,r5,256

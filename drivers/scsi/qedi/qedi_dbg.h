@@ -1,7 +1,10 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * QLogic iSCSI Offload Driver
  * Copyright (c) 2016 Cavium Inc.
+ *
+ * This software is available under the terms of the GNU General Public License
+ * (GPL) Version 2, available from the file COPYING in the main directory of
+ * this source tree.
  */
 
 #ifndef _QEDI_DBG_H_
@@ -11,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/string.h>
+#include <linux/version.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <scsi/scsi_transport.h>
@@ -43,7 +47,7 @@ extern uint qedi_dbg_log;
 #define QEDI_LOG_LPORT		0x4000		/* lport logs */
 #define QEDI_LOG_ELS		0x8000		/* ELS logs */
 #define QEDI_LOG_NPIV		0x10000		/* NPIV logs */
-#define QEDI_LOG_SESS		0x20000		/* Connection setup, cleanup */
+#define QEDI_LOG_SESS		0x20000		/* Conection setup, cleanup */
 #define QEDI_LOG_UIO		0x40000		/* iSCSI UIO logs */
 #define QEDI_LOG_TID		0x80000         /* FW TID context acquire,
 						 * free
@@ -99,6 +103,7 @@ int qedi_create_sysfs_attr(struct Scsi_Host *shost,
 void qedi_remove_sysfs_attr(struct Scsi_Host *shost,
 			    struct sysfs_bin_attrs *iter);
 
+#ifdef CONFIG_DEBUG_FS
 /* DebugFS related code */
 struct qedi_list_of_funcs {
 	char *oper_str;
@@ -129,10 +134,11 @@ struct qedi_debugfs_ops {
 }
 
 void qedi_dbg_host_init(struct qedi_dbg_ctx *qedi,
-			const struct qedi_debugfs_ops *dops,
+			struct qedi_debugfs_ops *dops,
 			const struct file_operations *fops);
 void qedi_dbg_host_exit(struct qedi_dbg_ctx *qedi);
 void qedi_dbg_init(char *drv_name);
 void qedi_dbg_exit(void);
+#endif /* CONFIG_DEBUG_FS */
 
 #endif /* _QEDI_DBG_H_ */

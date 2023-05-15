@@ -1,7 +1,18 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright(C) 2015 Linaro Limited. All rights reserved.
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef _CORESIGHT_TMC_H
@@ -70,8 +81,7 @@
 #define TMC_AXICTL_PROT_CTL_B0	BIT(0)
 #define TMC_AXICTL_PROT_CTL_B1	BIT(1)
 #define TMC_AXICTL_SCT_GAT_MODE	BIT(7)
-#define TMC_AXICTL_WR_BURST(v)	(((v) & 0xf) << 8)
-#define TMC_AXICTL_WR_BURST_16	0xf
+#define TMC_AXICTL_WR_BURST_16	0xF00
 /* Write-back Read and Write-allocate */
 #define TMC_AXICTL_AXCACHE_OS	(0xf << 2)
 #define TMC_AXICTL_ARCACHE_OS	(0xf << 16)
@@ -166,6 +176,7 @@ struct etr_buf {
 /**
  * struct tmc_drvdata - specifics associated to an TMC component
  * @base:	memory mapped base address for this component.
+ * @dev:	the device entity associated to this component.
  * @csdev:	component vitals needed by the framework.
  * @miscdev:	specifics to handle "/dev/xyz.tmc" entry.
  * @spinlock:	only one at a time pls.
@@ -175,8 +186,6 @@ struct etr_buf {
  * @etr_buf:	details of buffer used in TMC-ETR
  * @len:	size of the available trace for ETF/ETB.
  * @size:	trace buffer size for this TMC (common for all modes).
- * @max_burst_size: The maximum burst size that can be initiated by
- *		TMC-ETR on AXI bus.
  * @mode:	how this TMC is being used.
  * @config_type: TMC variant, must be of type @tmc_config_type.
  * @memwidth:	width of the memory interface databus, in bytes.
@@ -190,6 +199,7 @@ struct etr_buf {
  */
 struct tmc_drvdata {
 	void __iomem		*base;
+	struct device		*dev;
 	struct coresight_device	*csdev;
 	struct miscdevice	miscdev;
 	spinlock_t		spinlock;
@@ -201,7 +211,6 @@ struct tmc_drvdata {
 	};
 	u32			len;
 	u32			size;
-	u32			max_burst_size;
 	u32			mode;
 	enum tmc_config_type	config_type;
 	enum tmc_mem_intf_width	memwidth;
@@ -255,7 +264,7 @@ struct tmc_sg_table {
 };
 
 /* Generic functions */
-int tmc_wait_for_tmcready(struct tmc_drvdata *drvdata);
+void tmc_wait_for_tmcready(struct tmc_drvdata *drvdata);
 void tmc_flush_and_stop(struct tmc_drvdata *drvdata);
 void tmc_enable_hw(struct tmc_drvdata *drvdata);
 void tmc_disable_hw(struct tmc_drvdata *drvdata);
@@ -272,7 +281,6 @@ ssize_t tmc_etb_get_sysfs_trace(struct tmc_drvdata *drvdata,
 /* ETR functions */
 int tmc_read_prepare_etr(struct tmc_drvdata *drvdata);
 int tmc_read_unprepare_etr(struct tmc_drvdata *drvdata);
-void tmc_etr_disable_hw(struct tmc_drvdata *drvdata);
 extern const struct coresight_ops tmc_etr_cs_ops;
 ssize_t tmc_etr_get_sysfs_trace(struct tmc_drvdata *drvdata,
 				loff_t pos, size_t len, char **bufpp);
@@ -282,12 +290,12 @@ ssize_t tmc_etr_get_sysfs_trace(struct tmc_drvdata *drvdata,
 static inline u64							\
 tmc_read_##name(struct tmc_drvdata *drvdata)				\
 {									\
-	return csdev_access_relaxed_read_pair(&drvdata->csdev->access, lo_off, hi_off); \
+	return coresight_read_reg_pair(drvdata->base, lo_off, hi_off);	\
 }									\
 static inline void							\
 tmc_write_##name(struct tmc_drvdata *drvdata, u64 val)			\
 {									\
-	csdev_access_relaxed_write_pair(&drvdata->csdev->access, val, lo_off, hi_off); \
+	coresight_write_reg_pair(drvdata->base, val, lo_off, hi_off);	\
 }
 
 TMC_REG_PAIR(rrp, TMC_RRP, TMC_RRPHI)
@@ -329,8 +337,5 @@ tmc_sg_table_buf_size(struct tmc_sg_table *sg_table)
 }
 
 struct coresight_device *tmc_etr_get_catu_device(struct tmc_drvdata *drvdata);
-
-void tmc_etr_set_catu_ops(const struct etr_buf_operations *catu);
-void tmc_etr_remove_catu_ops(void);
 
 #endif

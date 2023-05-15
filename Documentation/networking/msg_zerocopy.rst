@@ -7,7 +7,7 @@ Intro
 =====
 
 The MSG_ZEROCOPY flag enables copy avoidance for socket send calls.
-The feature is currently implemented for TCP and UDP sockets.
+The feature is currently implemented for TCP sockets.
 
 
 Opportunity and Caveats
@@ -15,7 +15,7 @@ Opportunity and Caveats
 
 Copying large buffers between user process and kernel can be
 expensive. Linux supports various interfaces that eschew copying,
-such as sendfile and splice. The MSG_ZEROCOPY flag extends the
+such as sendpage and splice. The MSG_ZEROCOPY flag extends the
 underlying copy avoidance mechanism to common socket send calls.
 
 Copy avoidance is not a free lunch. As implemented, with page pinning,
@@ -50,7 +50,7 @@ the excellent reporting over at LWN.net or read the original code.
 
   patchset
     [PATCH net-next v4 0/9] socket sendmsg MSG_ZEROCOPY
-    https://lore.kernel.org/netdev/20170803202945.70750-1-willemdebruijn.kernel@gmail.com
+    http://lkml.kernel.org/r/20170803202945.70750-1-willemdebruijn.kernel@gmail.com
 
 
 Interface
@@ -72,6 +72,7 @@ this flag, a process must first signal intent by setting a socket option:
 	if (setsockopt(fd, SOL_SOCKET, SO_ZEROCOPY, &one, sizeof(one)))
 		error(1, errno, "setsockopt zerocopy");
 
+
 Transmission
 ------------
 
@@ -83,8 +84,8 @@ Pass the new flag.
 	ret = send(fd, buf, sizeof(buf), MSG_ZEROCOPY);
 
 A zerocopy failure will return -1 with errno ENOBUFS. This happens if
-the socket exceeds its optmem limit or the user exceeds their ulimit on
-locked pages.
+the socket option was not set, the socket exceeds its optmem limit or
+the user exceeds its ulimit on locked pages.
 
 
 Mixing copy avoidance and copying

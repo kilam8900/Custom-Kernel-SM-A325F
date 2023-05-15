@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/err.h>
 #include <linux/i2c.h>
 #include <linux/i2c-mux.h>
@@ -32,9 +31,9 @@ static int mpu3050_i2c_bypass_deselect(struct i2c_mux_core *mux, u32 chan_id)
 	return 0;
 }
 
-static int mpu3050_i2c_probe(struct i2c_client *client)
+static int mpu3050_i2c_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
-	const struct i2c_device_id *id = i2c_client_get_device_id(client);
 	struct regmap *regmap;
 	const char *name;
 	struct mpu3050 *mpu3050;
@@ -51,8 +50,8 @@ static int mpu3050_i2c_probe(struct i2c_client *client)
 
 	regmap = devm_regmap_init_i2c(client, &mpu3050_i2c_regmap_config);
 	if (IS_ERR(regmap)) {
-		dev_err(&client->dev, "Failed to register i2c regmap: %pe\n",
-			regmap);
+		dev_err(&client->dev, "Failed to register i2c regmap %d\n",
+			(int)PTR_ERR(regmap));
 		return PTR_ERR(regmap);
 	}
 
@@ -78,7 +77,7 @@ static int mpu3050_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void mpu3050_i2c_remove(struct i2c_client *client)
+static int mpu3050_i2c_remove(struct i2c_client *client)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(&client->dev);
 	struct mpu3050 *mpu3050 = iio_priv(indio_dev);
@@ -86,7 +85,7 @@ static void mpu3050_i2c_remove(struct i2c_client *client)
 	if (mpu3050->i2cmux)
 		i2c_mux_del_adapters(mpu3050->i2cmux);
 
-	mpu3050_common_remove(&client->dev);
+	return mpu3050_common_remove(&client->dev);
 }
 
 /*
@@ -108,13 +107,13 @@ static const struct of_device_id mpu3050_i2c_of_match[] = {
 MODULE_DEVICE_TABLE(of, mpu3050_i2c_of_match);
 
 static struct i2c_driver mpu3050_i2c_driver = {
-	.probe_new = mpu3050_i2c_probe,
+	.probe = mpu3050_i2c_probe,
 	.remove = mpu3050_i2c_remove,
 	.id_table = mpu3050_i2c_id,
 	.driver = {
 		.of_match_table = mpu3050_i2c_of_match,
 		.name = "mpu3050-i2c",
-		.pm = pm_ptr(&mpu3050_dev_pm_ops),
+		.pm = &mpu3050_dev_pm_ops,
 	},
 };
 module_i2c_driver(mpu3050_i2c_driver);

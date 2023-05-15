@@ -1,6 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * (c) 2017 Stefano Stabellini <stefano@aporeto.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/inet.h>
@@ -14,7 +23,6 @@
 #include <net/inet_common.h>
 #include <net/inet_connection_sock.h>
 #include <net/request_sock.h>
-#include <trace/events/sock.h>
 
 #include <xen/events.h>
 #include <xen/grant_table.h>
@@ -25,7 +33,7 @@
 #define PVCALLS_VERSIONS "1"
 #define MAX_RING_ORDER XENBUS_MAX_RING_GRANT_ORDER
 
-static struct pvcalls_back_global {
+struct pvcalls_back_global {
 	struct list_head frontends;
 	struct semaphore frontends_lock;
 } pvcalls_back_global;
@@ -67,7 +75,6 @@ struct sock_mapping {
 	atomic_t write;
 	atomic_t io;
 	atomic_t release;
-	atomic_t eoi;
 	void (*saved_data_ready)(struct sock *sk);
 	struct pvcalls_ioworker ioworker;
 };
@@ -89,7 +96,7 @@ static int pvcalls_back_release_active(struct xenbus_device *dev,
 				       struct pvcalls_fedata *fedata,
 				       struct sock_mapping *map);
 
-static bool pvcalls_conn_back_read(void *opaque)
+static void pvcalls_conn_back_read(void *opaque)
 {
 	struct sock_mapping *map = (struct sock_mapping *)opaque;
 	struct msghdr msg;
@@ -109,17 +116,17 @@ static bool pvcalls_conn_back_read(void *opaque)
 	virt_mb();
 
 	if (error)
-		return false;
+		return;
 
 	size = pvcalls_queued(prod, cons, array_size);
 	if (size >= array_size)
-		return false;
+		return;
 	spin_lock_irqsave(&map->sock->sk->sk_receive_queue.lock, flags);
 	if (skb_queue_empty(&map->sock->sk->sk_receive_queue)) {
 		atomic_set(&map->read, 0);
 		spin_unlock_irqrestore(&map->sock->sk->sk_receive_queue.lock,
 				flags);
-		return true;
+		return;
 	}
 	spin_unlock_irqrestore(&map->sock->sk->sk_receive_queue.lock, flags);
 	wanted = array_size - size;
@@ -127,23 +134,27 @@ static bool pvcalls_conn_back_read(void *opaque)
 	masked_cons = pvcalls_mask(cons, array_size);
 
 	memset(&msg, 0, sizeof(msg));
+	msg.msg_iter.type = ITER_KVEC|WRITE;
+	msg.msg_iter.count = wanted;
 	if (masked_prod < masked_cons) {
 		vec[0].iov_base = data->in + masked_prod;
 		vec[0].iov_len = wanted;
-		iov_iter_kvec(&msg.msg_iter, ITER_DEST, vec, 1, wanted);
+		msg.msg_iter.kvec = vec;
+		msg.msg_iter.nr_segs = 1;
 	} else {
 		vec[0].iov_base = data->in + masked_prod;
 		vec[0].iov_len = array_size - masked_prod;
 		vec[1].iov_base = data->in;
 		vec[1].iov_len = wanted - vec[0].iov_len;
-		iov_iter_kvec(&msg.msg_iter, ITER_DEST, vec, 2, wanted);
+		msg.msg_iter.kvec = vec;
+		msg.msg_iter.nr_segs = 2;
 	}
 
 	atomic_set(&map->read, 0);
 	ret = inet_recvmsg(map->sock, &msg, wanted, MSG_DONTWAIT);
 	WARN_ON(ret > wanted);
 	if (ret == -EAGAIN) /* shouldn't happen */
-		return true;
+		return;
 	if (!ret)
 		ret = -ENOTCONN;
 	spin_lock_irqsave(&map->sock->sk->sk_receive_queue.lock, flags);
@@ -162,10 +173,10 @@ static bool pvcalls_conn_back_read(void *opaque)
 	virt_wmb();
 	notify_remote_via_irq(map->irq);
 
-	return true;
+	return;
 }
 
-static bool pvcalls_conn_back_write(struct sock_mapping *map)
+static void pvcalls_conn_back_write(struct sock_mapping *map)
 {
 	struct pvcalls_data_intf *intf = map->ring;
 	struct pvcalls_data *data = &map->data;
@@ -173,8 +184,6 @@ static bool pvcalls_conn_back_write(struct sock_mapping *map)
 	struct kvec vec[2];
 	RING_IDX cons, prod, size, array_size;
 	int ret;
-
-	atomic_set(&map->write, 0);
 
 	cons = intf->out_cons;
 	prod = intf->out_prod;
@@ -184,28 +193,34 @@ static bool pvcalls_conn_back_write(struct sock_mapping *map)
 	array_size = XEN_FLEX_RING_SIZE(map->ring_order);
 	size = pvcalls_queued(prod, cons, array_size);
 	if (size == 0)
-		return false;
+		return;
 
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_flags |= MSG_DONTWAIT;
+	msg.msg_iter.type = ITER_KVEC|READ;
+	msg.msg_iter.count = size;
 	if (pvcalls_mask(prod, array_size) > pvcalls_mask(cons, array_size)) {
 		vec[0].iov_base = data->out + pvcalls_mask(cons, array_size);
 		vec[0].iov_len = size;
-		iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, vec, 1, size);
+		msg.msg_iter.kvec = vec;
+		msg.msg_iter.nr_segs = 1;
 	} else {
 		vec[0].iov_base = data->out + pvcalls_mask(cons, array_size);
 		vec[0].iov_len = array_size - pvcalls_mask(cons, array_size);
 		vec[1].iov_base = data->out;
 		vec[1].iov_len = size - vec[0].iov_len;
-		iov_iter_kvec(&msg.msg_iter, ITER_SOURCE, vec, 2, size);
+		msg.msg_iter.kvec = vec;
+		msg.msg_iter.nr_segs = 2;
 	}
 
+	atomic_set(&map->write, 0);
 	ret = inet_sendmsg(map->sock, &msg, size);
-	if (ret == -EAGAIN) {
+	if (ret == -EAGAIN || (ret >= 0 && ret < size)) {
 		atomic_inc(&map->write);
 		atomic_inc(&map->io);
-		return true;
 	}
+	if (ret == -EAGAIN)
+		return;
 
 	/* write the data, then update the indexes */
 	virt_wmb();
@@ -218,13 +233,9 @@ static bool pvcalls_conn_back_write(struct sock_mapping *map)
 	}
 	/* update the indexes, then notify the other end */
 	virt_wmb();
-	if (prod != cons + ret) {
+	if (prod != cons + ret)
 		atomic_inc(&map->write);
-		atomic_inc(&map->io);
-	}
 	notify_remote_via_irq(map->irq);
-
-	return true;
 }
 
 static void pvcalls_back_ioworker(struct work_struct *work)
@@ -233,7 +244,6 @@ static void pvcalls_back_ioworker(struct work_struct *work)
 		struct pvcalls_ioworker, register_work);
 	struct sock_mapping *map = container_of(ioworker, struct sock_mapping,
 		ioworker);
-	unsigned int eoi_flags = XEN_EOI_FLAG_SPURIOUS;
 
 	while (atomic_read(&map->io) > 0) {
 		if (atomic_read(&map->release) > 0) {
@@ -241,18 +251,10 @@ static void pvcalls_back_ioworker(struct work_struct *work)
 			return;
 		}
 
-		if (atomic_read(&map->read) > 0 &&
-		    pvcalls_conn_back_read(map))
-			eoi_flags = 0;
-		if (atomic_read(&map->write) > 0 &&
-		    pvcalls_conn_back_write(map))
-			eoi_flags = 0;
-
-		if (atomic_read(&map->eoi) > 0 && !atomic_read(&map->write)) {
-			atomic_set(&map->eoi, 0);
-			xen_irq_lateeoi(map->irq, eoi_flags);
-			eoi_flags = XEN_EOI_FLAG_SPURIOUS;
-		}
+		if (atomic_read(&map->read) > 0)
+			pvcalls_conn_back_read(map);
+		if (atomic_read(&map->write) > 0)
+			pvcalls_conn_back_write(map);
 
 		atomic_dec(&map->io);
 	}
@@ -302,8 +304,6 @@ static void pvcalls_sk_data_ready(struct sock *sock)
 	struct sock_mapping *map = sock->sk_user_data;
 	struct pvcalls_ioworker *iow;
 
-	trace_sk_data_ready(sock);
-
 	if (map == NULL)
 		return;
 
@@ -317,7 +317,7 @@ static struct sock_mapping *pvcalls_new_active_socket(
 		struct pvcalls_fedata *fedata,
 		uint64_t id,
 		grant_ref_t ref,
-		evtchn_port_t evtchn,
+		uint32_t evtchn,
 		struct socket *sock)
 {
 	int ret;
@@ -351,9 +351,12 @@ static struct sock_mapping *pvcalls_new_active_socket(
 		goto out;
 	map->bytes = page;
 
-	ret = bind_interdomain_evtchn_to_irqhandler_lateeoi(
-			fedata->dev, evtchn,
-			pvcalls_back_conn_event, 0, "pvcalls-backend", map);
+	ret = bind_interdomain_evtchn_to_irqhandler(fedata->dev->otherend_id,
+						    evtchn,
+						    pvcalls_back_conn_event,
+						    0,
+						    "pvcalls-backend",
+						    map);
 	if (ret < 0)
 		goto out;
 	map->irq = ret;
@@ -469,6 +472,7 @@ static int pvcalls_back_release_passive(struct xenbus_device *dev,
 		write_unlock_bh(&mappass->sock->sk->sk_callback_lock);
 	}
 	sock_release(mappass->sock);
+	flush_workqueue(mappass->wq);
 	destroy_workqueue(mappass->wq);
 	kfree(mappass);
 
@@ -551,7 +555,7 @@ static void __pvcalls_back_accept(struct work_struct *work)
 	ret = inet_accept(mappass->sock, sock, O_NONBLOCK, true);
 	if (ret == -EAGAIN) {
 		sock_release(sock);
-		return;
+		goto out_error;
 	}
 
 	map = pvcalls_new_active_socket(fedata,
@@ -591,8 +595,6 @@ static void pvcalls_pass_sk_data_ready(struct sock *sock)
 	struct xen_pvcalls_response *rsp;
 	unsigned long flags;
 	int notify;
-
-	trace_sk_data_ready(sock);
 
 	if (mappass == NULL)
 		return;
@@ -888,18 +890,15 @@ static irqreturn_t pvcalls_back_event(int irq, void *dev_id)
 {
 	struct xenbus_device *dev = dev_id;
 	struct pvcalls_fedata *fedata = NULL;
-	unsigned int eoi_flags = XEN_EOI_FLAG_SPURIOUS;
 
-	if (dev) {
-		fedata = dev_get_drvdata(&dev->dev);
-		if (fedata) {
-			pvcalls_back_work(fedata);
-			eoi_flags = 0;
-		}
-	}
+	if (dev == NULL)
+		return IRQ_HANDLED;
 
-	xen_irq_lateeoi(irq, eoi_flags);
+	fedata = dev_get_drvdata(&dev->dev);
+	if (fedata == NULL)
+		return IRQ_HANDLED;
 
+	pvcalls_back_work(fedata);
 	return IRQ_HANDLED;
 }
 
@@ -909,15 +908,12 @@ static irqreturn_t pvcalls_back_conn_event(int irq, void *sock_map)
 	struct pvcalls_ioworker *iow;
 
 	if (map == NULL || map->sock == NULL || map->sock->sk == NULL ||
-		map->sock->sk->sk_user_data != map) {
-		xen_irq_lateeoi(irq, 0);
+		map->sock->sk->sk_user_data != map)
 		return IRQ_HANDLED;
-	}
 
 	iow = &map->ioworker;
 
 	atomic_inc(&map->write);
-	atomic_inc(&map->eoi);
 	atomic_inc(&map->io);
 	queue_work(iow->wq, &iow->register_work);
 
@@ -926,8 +922,7 @@ static irqreturn_t pvcalls_back_conn_event(int irq, void *sock_map)
 
 static int backend_connect(struct xenbus_device *dev)
 {
-	int err;
-	evtchn_port_t evtchn;
+	int err, evtchn;
 	grant_ref_t ring_ref;
 	struct pvcalls_fedata *fedata = NULL;
 
@@ -953,7 +948,7 @@ static int backend_connect(struct xenbus_device *dev)
 		goto error;
 	}
 
-	err = bind_interdomain_evtchn_to_irq_lateeoi(dev, evtchn);
+	err = bind_interdomain_evtchn_to_irq(dev->otherend_id, evtchn);
 	if (err < 0)
 		goto error;
 	fedata->irq = err;
@@ -1187,11 +1182,12 @@ static void pvcalls_back_changed(struct xenbus_device *dev,
 	}
 }
 
-static void pvcalls_back_remove(struct xenbus_device *dev)
+static int pvcalls_back_remove(struct xenbus_device *dev)
 {
+	return 0;
 }
 
-static int pvcalls_back_uevent(const struct xenbus_device *xdev,
+static int pvcalls_back_uevent(struct xenbus_device *xdev,
 			       struct kobj_uevent_env *env)
 {
 	return 0;
@@ -1242,7 +1238,3 @@ static void __exit pvcalls_back_fin(void)
 }
 
 module_exit(pvcalls_back_fin);
-
-MODULE_DESCRIPTION("Xen PV Calls backend driver");
-MODULE_AUTHOR("Stefano Stabellini <sstabellini@kernel.org>");
-MODULE_LICENSE("GPL");

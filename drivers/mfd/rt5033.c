@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * MFD core driver for the Richtek RT5033.
  *
@@ -7,6 +6,10 @@
  *
  * Copyright (C) 2014 Samsung Electronics, Co., Ltd.
  * Author: Beomho Seo <beomho.seo@samsung.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published bythe Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -29,7 +32,8 @@ static const struct regmap_irq rt5033_irqs[] = {
 static const struct regmap_irq_chip rt5033_irq_chip = {
 	.name		= "rt5033",
 	.status_base	= RT5033_REG_PMIC_IRQ_STAT,
-	.unmask_base	= RT5033_REG_PMIC_IRQ_CTRL,
+	.mask_base	= RT5033_REG_PMIC_IRQ_CTRL,
+	.mask_invert	= true,
 	.num_regs	= 1,
 	.irqs		= rt5033_irqs,
 	.num_irqs	= ARRAY_SIZE(rt5033_irqs),
@@ -55,7 +59,8 @@ static const struct regmap_config rt5033_regmap_config = {
 	.max_register	= RT5033_REG_END,
 };
 
-static int rt5033_i2c_probe(struct i2c_client *i2c)
+static int rt5033_i2c_probe(struct i2c_client *i2c,
+				const struct i2c_device_id *id)
 {
 	struct rt5033_dev *rt5033;
 	unsigned int dev_id;
@@ -120,9 +125,9 @@ MODULE_DEVICE_TABLE(of, rt5033_dt_match);
 static struct i2c_driver rt5033_driver = {
 	.driver = {
 		.name = "rt5033",
-		.of_match_table = rt5033_dt_match,
+		.of_match_table = of_match_ptr(rt5033_dt_match),
 	},
-	.probe_new = rt5033_i2c_probe,
+	.probe = rt5033_i2c_probe,
 	.id_table = rt5033_i2c_id,
 };
 module_i2c_driver(rt5033_driver);

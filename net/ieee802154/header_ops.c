@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2014 Fraunhofer ITWM
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  *
  * Written by:
  * Phoebe Buckheister <phoebe.buckheister@itwm.fraunhofer.de>
@@ -119,30 +127,6 @@ ieee802154_hdr_push(struct sk_buff *skb, struct ieee802154_hdr *hdr)
 	return pos;
 }
 EXPORT_SYMBOL_GPL(ieee802154_hdr_push);
-
-int ieee802154_beacon_push(struct sk_buff *skb,
-			   struct ieee802154_beacon_frame *beacon)
-{
-	struct ieee802154_beacon_hdr *mac_pl = &beacon->mac_pl;
-	struct ieee802154_hdr *mhr = &beacon->mhr;
-	int ret;
-
-	skb_reserve(skb, sizeof(*mhr));
-	ret = ieee802154_hdr_push(skb, mhr);
-	if (ret < 0)
-		return ret;
-
-	skb_reset_mac_header(skb);
-	skb->mac_len = ret;
-
-	skb_put_data(skb, mac_pl, sizeof(*mac_pl));
-
-	if (mac_pl->pend_short_addr_count || mac_pl->pend_ext_addr_count)
-		return -EOPNOTSUPP;
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(ieee802154_beacon_push);
 
 static int
 ieee802154_hdr_get_addr(const u8 *buf, int mode, bool omit_pan,

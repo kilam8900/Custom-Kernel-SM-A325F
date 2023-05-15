@@ -8,7 +8,6 @@
 
 #define LOCK_PREFIX "\n\tlock; "
 
-#include <asm/asm.h>
 #include <asm/cmpxchg.h>
 
 /*
@@ -26,7 +25,7 @@
  */
 static inline int atomic_read(const atomic_t *v)
 {
-	return READ_ONCE((v)->counter);
+	return ACCESS_ONCE((v)->counter);
 }
 
 /**
@@ -69,16 +68,6 @@ static inline int atomic_dec_and_test(atomic_t *v)
 static __always_inline int atomic_cmpxchg(atomic_t *v, int old, int new)
 {
 	return cmpxchg(&v->counter, old, new);
-}
-
-static inline int test_and_set_bit(long nr, unsigned long *addr)
-{
-	GEN_BINARY_RMWcc(LOCK_PREFIX __ASM_SIZE(bts), *addr, "Ir", nr, "%0", "c");
-}
-
-static inline int test_and_clear_bit(long nr, unsigned long *addr)
-{
-	GEN_BINARY_RMWcc(LOCK_PREFIX __ASM_SIZE(btc), *addr, "Ir", nr, "%0", "c");
 }
 
 #endif /* _TOOLS_LINUX_ASM_X86_ATOMIC_H */

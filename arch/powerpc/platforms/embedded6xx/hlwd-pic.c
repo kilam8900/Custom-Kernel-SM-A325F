@@ -1,10 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * arch/powerpc/platforms/embedded6xx/hlwd-pic.c
  *
  * Nintendo Wii "Hollywood" interrupt controller support.
  * Copyright (C) 2009 The GameCube Linux Team
  * Copyright (C) 2009 Albert Herranz
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License, or (at your option) any later version.
+ *
  */
 #define DRV_MODULE_NAME "hlwd-pic"
 #define pr_fmt(fmt) DRV_MODULE_NAME ": " fmt
@@ -108,6 +113,7 @@ static const struct irq_domain_ops hlwd_irq_domain_ops = {
 static unsigned int __hlwd_pic_get_irq(struct irq_domain *h)
 {
 	void __iomem *io_base = h->host_data;
+	int irq;
 	u32 irq_status;
 
 	irq_status = in_be32(io_base + HW_BROADWAY_ICR) &
@@ -115,22 +121,23 @@ static unsigned int __hlwd_pic_get_irq(struct irq_domain *h)
 	if (irq_status == 0)
 		return 0;	/* no more IRQs pending */
 
-	return __ffs(irq_status);
+	irq = __ffs(irq_status);
+	return irq_linear_revmap(h, irq);
 }
 
 static void hlwd_pic_irq_cascade(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	struct irq_domain *irq_domain = irq_desc_get_handler_data(desc);
-	unsigned int hwirq;
+	unsigned int virq;
 
 	raw_spin_lock(&desc->lock);
 	chip->irq_mask(&desc->irq_data); /* IRQ_LEVEL */
 	raw_spin_unlock(&desc->lock);
 
-	hwirq = __hlwd_pic_get_irq(irq_domain);
-	if (hwirq)
-		generic_handle_domain_irq(irq_domain, hwirq);
+	virq = __hlwd_pic_get_irq(irq_domain);
+	if (virq)
+		generic_handle_irq(virq);
 	else
 		pr_err("spurious interrupt!\n");
 
@@ -153,7 +160,7 @@ static void __hlwd_quiesce(void __iomem *io_base)
 	out_be32(io_base + HW_BROADWAY_ICR, 0xffffffff);
 }
 
-static struct irq_domain *__init hlwd_pic_init(struct device_node *np)
+struct irq_domain *hlwd_pic_init(struct device_node *np)
 {
 	struct irq_domain *irq_domain;
 	struct resource res;
@@ -188,8 +195,7 @@ static struct irq_domain *__init hlwd_pic_init(struct device_node *np)
 
 unsigned int hlwd_pic_get_irq(void)
 {
-	unsigned int hwirq = __hlwd_pic_get_irq(hlwd_irq_host);
-	return hwirq ? irq_linear_revmap(hlwd_irq_host, hwirq) : 0;
+	return __hlwd_pic_get_irq(hlwd_irq_host);
 }
 
 /*
@@ -197,7 +203,7 @@ unsigned int hlwd_pic_get_irq(void)
  *
  */
 
-void __init hlwd_pic_probe(void)
+void hlwd_pic_probe(void)
 {
 	struct irq_domain *host;
 	struct device_node *np;
@@ -214,7 +220,6 @@ void __init hlwd_pic_probe(void)
 			irq_set_chained_handler(cascade_virq,
 						hlwd_pic_irq_cascade);
 			hlwd_irq_host = host;
-			of_node_put(np);
 			break;
 		}
 	}

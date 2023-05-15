@@ -36,6 +36,7 @@
 #include <linux/netdevice.h>
 #include <linux/vmalloc.h>
 #include <linux/delay.h>
+#include <linux/idr.h>
 #include <linux/module.h>
 #include <linux/printk.h>
 #ifdef CONFIG_INFINIBAND_QIB_DCA
@@ -92,9 +93,9 @@ unsigned qib_cc_table_size;
 module_param_named(cc_table_size, qib_cc_table_size, uint, S_IRUGO);
 MODULE_PARM_DESC(cc_table_size, "Congestion control table entries 0 (CCA disabled - default), min = 128, max = 1984");
 
-static void verify_interrupt(struct timer_list *);
+static void verify_interrupt(unsigned long);
 
-DEFINE_XARRAY_FLAGS(qib_dev_table, XA_FLAGS_ALLOC | XA_FLAGS_LOCK_IRQ);
+static struct idr qib_unit_table;
 u32 qib_cpulist_count;
 unsigned long *qib_cpulist;
 
@@ -208,6 +209,7 @@ struct qib_ctxtdata *qib_create_ctxtdata(struct qib_pportdata *ppd, u32 ctxt,
 		rcd->rcvegrbuf_chunks = (rcd->rcvegrcnt +
 			rcd->rcvegrbufs_perchunk - 1) /
 			rcd->rcvegrbufs_perchunk;
+		BUG_ON(!is_power_of_2(rcd->rcvegrbufs_perchunk));
 		rcd->rcvegrbufs_perchunk_shift =
 			ilog2(rcd->rcvegrbufs_perchunk);
 	}
@@ -231,7 +233,8 @@ int qib_init_pportdata(struct qib_pportdata *ppd, struct qib_devdata *dd,
 	spin_lock_init(&ppd->cc_shadow_lock);
 	init_waitqueue_head(&ppd->state_wait);
 
-	timer_setup(&ppd->symerr_clear_timer, qib_clear_symerror_on_linkup, 0);
+	setup_timer(&ppd->symerr_clear_timer, qib_clear_symerror_on_linkup,
+		    (unsigned long)ppd);
 
 	ppd->qib_wq = NULL;
 	ppd->ibport_data.pmastats =
@@ -367,13 +370,11 @@ static void init_shadow_tids(struct qib_devdata *dd)
 	struct page **pages;
 	dma_addr_t *addrs;
 
-	pages = vzalloc(array_size(sizeof(struct page *),
-				   dd->cfgctxts * dd->rcvtidcnt));
+	pages = vzalloc(dd->cfgctxts * dd->rcvtidcnt * sizeof(struct page *));
 	if (!pages)
 		goto bail;
 
-	addrs = vzalloc(array_size(sizeof(dma_addr_t),
-				   dd->cfgctxts * dd->rcvtidcnt));
+	addrs = vzalloc(dd->cfgctxts * dd->rcvtidcnt * sizeof(dma_addr_t));
 	if (!addrs)
 		goto bail_free;
 
@@ -427,7 +428,8 @@ static int loadtime_init(struct qib_devdata *dd)
 	qib_get_eeprom_info(dd);
 
 	/* setup time (don't start yet) to verify we got interrupt */
-	timer_setup(&dd->intrchk_timer, verify_interrupt, 0);
+	setup_timer(&dd->intrchk_timer, verify_interrupt,
+		    (unsigned long)dd);
 done:
 	return ret;
 }
@@ -491,9 +493,9 @@ static void enable_chip(struct qib_devdata *dd)
 	}
 }
 
-static void verify_interrupt(struct timer_list *t)
+static void verify_interrupt(unsigned long opaque)
 {
-	struct qib_devdata *dd = from_timer(dd, t, intrchk_timer);
+	struct qib_devdata *dd = (struct qib_devdata *) opaque;
 	u64 int_counter;
 
 	if (!dd)
@@ -678,9 +680,11 @@ int qib_init(struct qib_devdata *dd, int reinit)
 		lastfail = qib_create_rcvhdrq(dd, rcd);
 		if (!lastfail)
 			lastfail = qib_setup_eagerbufs(rcd);
-		if (lastfail)
+		if (lastfail) {
 			qib_dev_err(dd,
 				"failed to allocate kernel ctxt's rcvhdrq and/or egr bufs\n");
+			continue;
+		}
 	}
 
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
@@ -749,7 +753,8 @@ done:
 				continue;
 			if (dd->flags & QIB_HAS_SEND_DMA)
 				ret = qib_setup_sdma(ppd);
-			timer_setup(&ppd->hol_timer, qib_hol_event, 0);
+			setup_timer(&ppd->hol_timer, qib_hol_event,
+				    (unsigned long)ppd);
 			ppd->hol_state = QIB_HOL_UP;
 		}
 
@@ -784,9 +789,21 @@ void __attribute__((weak)) qib_disable_wc(struct qib_devdata *dd)
 {
 }
 
+static inline struct qib_devdata *__qib_lookup(int unit)
+{
+	return idr_find(&qib_unit_table, unit);
+}
+
 struct qib_devdata *qib_lookup(int unit)
 {
-	return xa_load(&qib_dev_table, unit);
+	struct qib_devdata *dd;
+	unsigned long flags;
+
+	spin_lock_irqsave(&qib_devs_lock, flags);
+	dd = __qib_lookup(unit);
+	spin_unlock_irqrestore(&qib_devs_lock, flags);
+
+	return dd;
 }
 
 /*
@@ -798,19 +815,23 @@ static void qib_stop_timers(struct qib_devdata *dd)
 	struct qib_pportdata *ppd;
 	int pidx;
 
-	if (dd->stats_timer.function)
+	if (dd->stats_timer.data) {
 		del_timer_sync(&dd->stats_timer);
-	if (dd->intrchk_timer.function)
+		dd->stats_timer.data = 0;
+	}
+	if (dd->intrchk_timer.data) {
 		del_timer_sync(&dd->intrchk_timer);
+		dd->intrchk_timer.data = 0;
+	}
 	for (pidx = 0; pidx < dd->num_pports; ++pidx) {
 		ppd = dd->pport + pidx;
-		if (ppd->hol_timer.function)
+		if (ppd->hol_timer.data)
 			del_timer_sync(&ppd->hol_timer);
-		if (ppd->led_override_timer.function) {
+		if (ppd->led_override_timer.data) {
 			del_timer_sync(&ppd->led_override_timer);
 			atomic_set(&ppd->led_override_timer_active, 0);
 		}
-		if (ppd->symerr_clear_timer.function)
+		if (ppd->symerr_clear_timer.data)
 			del_timer_sync(&ppd->symerr_clear_timer);
 	}
 }
@@ -1033,9 +1054,10 @@ void qib_free_devdata(struct qib_devdata *dd)
 {
 	unsigned long flags;
 
-	xa_lock_irqsave(&qib_dev_table, flags);
-	__xa_erase(&qib_dev_table, dd->unit);
-	xa_unlock_irqrestore(&qib_dev_table, flags);
+	spin_lock_irqsave(&qib_devs_lock, flags);
+	idr_remove(&qib_unit_table, dd->unit);
+	list_del(&dd->list);
+	spin_unlock_irqrestore(&qib_devs_lock, flags);
 
 #ifdef CONFIG_DEBUG_FS
 	qib_dbg_ibdev_exit(&dd->verbs_dev);
@@ -1056,15 +1078,15 @@ u64 qib_int_counter(struct qib_devdata *dd)
 
 u64 qib_sps_ints(void)
 {
-	unsigned long index, flags;
+	unsigned long flags;
 	struct qib_devdata *dd;
 	u64 sps_ints = 0;
 
-	xa_lock_irqsave(&qib_dev_table, flags);
-	xa_for_each(&qib_dev_table, index, dd) {
+	spin_lock_irqsave(&qib_devs_lock, flags);
+	list_for_each_entry(dd, &qib_dev_list, list) {
 		sps_ints += qib_int_counter(dd);
 	}
-	xa_unlock_irqrestore(&qib_dev_table, flags);
+	spin_unlock_irqrestore(&qib_devs_lock, flags);
 	return sps_ints;
 }
 
@@ -1073,9 +1095,12 @@ u64 qib_sps_ints(void)
  * allocator, because the verbs cleanup process both does cleanup and
  * free of the data structure.
  * "extra" is for chip-specific data.
+ *
+ * Use the idr mechanism to get a unit number for this unit.
  */
 struct qib_devdata *qib_alloc_devdata(struct pci_dev *pdev, size_t extra)
 {
+	unsigned long flags;
 	struct qib_devdata *dd;
 	int ret, nports;
 
@@ -1086,15 +1111,25 @@ struct qib_devdata *qib_alloc_devdata(struct pci_dev *pdev, size_t extra)
 	if (!dd)
 		return ERR_PTR(-ENOMEM);
 
-	ret = xa_alloc_irq(&qib_dev_table, &dd->unit, dd, xa_limit_32b,
-			GFP_KERNEL);
+	INIT_LIST_HEAD(&dd->list);
+
+	idr_preload(GFP_KERNEL);
+	spin_lock_irqsave(&qib_devs_lock, flags);
+
+	ret = idr_alloc(&qib_unit_table, dd, 0, 0, GFP_NOWAIT);
+	if (ret >= 0) {
+		dd->unit = ret;
+		list_add(&dd->list, &qib_dev_list);
+	}
+
+	spin_unlock_irqrestore(&qib_devs_lock, flags);
+	idr_preload_end();
+
 	if (ret < 0) {
 		qib_early_err(&pdev->dev,
 			      "Could not allocate unit ID: error %d\n", -ret);
 		goto bail;
 	}
-	rvt_set_ibdev_name(&dd->verbs_dev.rdi, "%s%d", "qib", dd->unit);
-
 	dd->int_counter = alloc_percpu(u64);
 	if (!dd->int_counter) {
 		ret = -ENOMEM;
@@ -1106,7 +1141,8 @@ struct qib_devdata *qib_alloc_devdata(struct pci_dev *pdev, size_t extra)
 	if (!qib_cpulist_count) {
 		u32 count = num_online_cpus();
 
-		qib_cpulist = bitmap_zalloc(count, GFP_KERNEL);
+		qib_cpulist = kzalloc(BITS_TO_LONGS(count) *
+				      sizeof(long), GFP_KERNEL);
 		if (qib_cpulist)
 			qib_cpulist_count = count;
 	}
@@ -1225,6 +1261,8 @@ static int __init qib_ib_init(void)
 	 * These must be called before the driver is registered with
 	 * the PCI subsystem.
 	 */
+	idr_init(&qib_unit_table);
+
 #ifdef CONFIG_INFINIBAND_QIB_DCA
 	dca_register_notify(&dca_notifier);
 #endif
@@ -1249,6 +1287,7 @@ bail_dev:
 #ifdef CONFIG_DEBUG_FS
 	qib_dbg_exit();
 #endif
+	idr_destroy(&qib_unit_table);
 	qib_dev_cleanup();
 bail:
 	return ret;
@@ -1278,9 +1317,9 @@ static void __exit qib_ib_cleanup(void)
 #endif
 
 	qib_cpulist_count = 0;
-	bitmap_free(qib_cpulist);
+	kfree(qib_cpulist);
 
-	WARN_ON(!xa_empty(&qib_dev_table));
+	idr_destroy(&qib_unit_table);
 	qib_dev_cleanup();
 }
 
@@ -1334,8 +1373,8 @@ static void cleanup_device_data(struct qib_devdata *dd)
 			for (i = ctxt_tidbase; i < maxtid; i++) {
 				if (!tmpp[i])
 					continue;
-				dma_unmap_page(&dd->pcidev->dev, tmpd[i],
-					       PAGE_SIZE, DMA_FROM_DEVICE);
+				pci_unmap_page(dd->pcidev, tmpd[i],
+					       PAGE_SIZE, PCI_DMA_FROMDEVICE);
 				qib_release_user_pages(&tmpp[i], 1);
 				tmpp[i] = NULL;
 			}
@@ -1546,14 +1585,18 @@ int qib_create_rcvhdrq(struct qib_devdata *dd, struct qib_ctxtdata *rcd)
 
 	if (!rcd->rcvhdrq) {
 		dma_addr_t phys_hdrqtail;
+		gfp_t gfp_flags;
 
 		amt = ALIGN(dd->rcvhdrcnt * dd->rcvhdrentsize *
 			    sizeof(u32), PAGE_SIZE);
+		gfp_flags = (rcd->ctxt >= dd->first_user_ctxt) ?
+			GFP_USER : GFP_KERNEL;
 
 		old_node_id = dev_to_node(&dd->pcidev->dev);
 		set_dev_node(&dd->pcidev->dev, rcd->node_id);
-		rcd->rcvhdrq = dma_alloc_coherent(&dd->pcidev->dev, amt,
-				&rcd->rcvhdrq_phys, GFP_KERNEL);
+		rcd->rcvhdrq = dma_alloc_coherent(
+			&dd->pcidev->dev, amt, &rcd->rcvhdrq_phys,
+			gfp_flags | __GFP_COMP);
 		set_dev_node(&dd->pcidev->dev, old_node_id);
 
 		if (!rcd->rcvhdrq) {
@@ -1573,7 +1616,7 @@ int qib_create_rcvhdrq(struct qib_devdata *dd, struct qib_ctxtdata *rcd)
 			set_dev_node(&dd->pcidev->dev, rcd->node_id);
 			rcd->rcvhdrtail_kvaddr = dma_alloc_coherent(
 				&dd->pcidev->dev, PAGE_SIZE, &phys_hdrqtail,
-				GFP_KERNEL);
+				gfp_flags);
 			set_dev_node(&dd->pcidev->dev, old_node_id);
 			if (!rcd->rcvhdrtail_kvaddr)
 				goto bail_free;
@@ -1604,7 +1647,7 @@ bail:
 }
 
 /**
- * qib_setup_eagerbufs - allocate eager buffers, both kernel and user contexts.
+ * allocate eager buffers, both kernel and user contexts.
  * @rcd: the context we are setting up.
  *
  * Allocate the eager TID buffers and program them into hip.
@@ -1617,7 +1660,16 @@ int qib_setup_eagerbufs(struct qib_ctxtdata *rcd)
 	struct qib_devdata *dd = rcd->dd;
 	unsigned e, egrcnt, egrperchunk, chunk, egrsize, egroff;
 	size_t size;
+	gfp_t gfp_flags;
 	int old_node_id;
+
+	/*
+	 * GFP_USER, but without GFP_FS, so buffer cache can be
+	 * coalesced (we hope); otherwise, even at order 4,
+	 * heavy filesystem activity makes these fail, and we can
+	 * use compound pages.
+	 */
+	gfp_flags = __GFP_RECLAIM | __GFP_IO | __GFP_COMP;
 
 	egrcnt = rcd->rcvegrcnt;
 	egroff = rcd->rcvegr_tid_base;
@@ -1628,16 +1680,15 @@ int qib_setup_eagerbufs(struct qib_ctxtdata *rcd)
 	size = rcd->rcvegrbuf_size;
 	if (!rcd->rcvegrbuf) {
 		rcd->rcvegrbuf =
-			kcalloc_node(chunk, sizeof(rcd->rcvegrbuf[0]),
-				     GFP_KERNEL, rcd->node_id);
+			kzalloc_node(chunk * sizeof(rcd->rcvegrbuf[0]),
+				GFP_KERNEL, rcd->node_id);
 		if (!rcd->rcvegrbuf)
 			goto bail;
 	}
 	if (!rcd->rcvegrbuf_phys) {
 		rcd->rcvegrbuf_phys =
-			kmalloc_array_node(chunk,
-					   sizeof(rcd->rcvegrbuf_phys[0]),
-					   GFP_KERNEL, rcd->node_id);
+			kmalloc_node(chunk * sizeof(rcd->rcvegrbuf_phys[0]),
+				GFP_KERNEL, rcd->node_id);
 		if (!rcd->rcvegrbuf_phys)
 			goto bail_rcvegrbuf;
 	}
@@ -1650,7 +1701,7 @@ int qib_setup_eagerbufs(struct qib_ctxtdata *rcd)
 		rcd->rcvegrbuf[e] =
 			dma_alloc_coherent(&dd->pcidev->dev, size,
 					   &rcd->rcvegrbuf_phys[e],
-					   GFP_KERNEL);
+					   gfp_flags);
 		set_dev_node(&dd->pcidev->dev, old_node_id);
 		if (!rcd->rcvegrbuf[e])
 			goto bail_rcvegrbuf_phys;
@@ -1745,7 +1796,7 @@ int init_chip_wc_pat(struct qib_devdata *dd, u32 vl15buflen)
 		qib_userlen = dd->ureg_align * dd->cfgctxts;
 
 	/* Sanity checks passed, now create the new mappings */
-	qib_kregbase = ioremap(qib_physaddr, qib_kreglen);
+	qib_kregbase = ioremap_nocache(qib_physaddr, qib_kreglen);
 	if (!qib_kregbase)
 		goto bail;
 
@@ -1754,7 +1805,7 @@ int init_chip_wc_pat(struct qib_devdata *dd, u32 vl15buflen)
 		goto bail_kregbase;
 
 	if (qib_userlen) {
-		qib_userbase = ioremap(qib_physaddr + dd->uregbase,
+		qib_userbase = ioremap_nocache(qib_physaddr + dd->uregbase,
 					       qib_userlen);
 		if (!qib_userbase)
 			goto bail_piobase;

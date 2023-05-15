@@ -25,12 +25,7 @@
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
-#include <linux/string_helpers.h>
-
 #include <asm/unaligned.h>
-
-#include <drm/drm_device.h>
-#include <drm/drm_util.h>
 
 #define ATOM_DEBUG
 
@@ -723,7 +718,7 @@ static void atom_op_jump(atom_exec_context *ctx, int *ptr, int arg)
 		break;
 	}
 	if (arg != ATOM_COND_ALWAYS)
-		SDEBUG("   taken: %s\n", str_yes_no(execute));
+		SDEBUG("   taken: %s\n", execute ? "yes" : "no");
 	SDEBUG("   target: 0x%04X\n", target);
 	if (execute) {
 		if (ctx->last_jump == (ctx->start + target)) {
@@ -1181,7 +1176,7 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 	ectx.abort = false;
 	ectx.last_jump = 0;
 	if (ws)
-		ectx.ws = kcalloc(4, ws, GFP_KERNEL);
+		ectx.ws = kzalloc(4 * ws, GFP_KERNEL);
 	else
 		ectx.ws = NULL;
 
@@ -1212,7 +1207,8 @@ static int atom_execute_table_locked(struct atom_context *ctx, int index, uint32
 	SDEBUG("<<\n");
 
 free:
-	kfree(ectx.ws);
+	if (ws)
+		kfree(ectx.ws);
 	return ret;
 }
 

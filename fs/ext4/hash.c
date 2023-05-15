@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ext4/hash.c
  *
  * Copyright (C) 2002 by Theodore Ts'o
+ *
+ * This file is released under the GPL v2.
+ *
+ * This file may be redistributed under the terms of the GNU Public
+ * License.
  */
 
 #include <linux/fs.h>
@@ -233,7 +237,6 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		break;
 	case DX_HASH_HALF_MD4_UNSIGNED:
 		str2hashbuf = str2hashbuf_unsigned;
-		fallthrough;
 	case DX_HASH_HALF_MD4:
 		p = name;
 		while (len > 0) {
@@ -247,7 +250,6 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		break;
 	case DX_HASH_TEA_UNSIGNED:
 		str2hashbuf = str2hashbuf_unsigned;
-		fallthrough;
 	case DX_HASH_TEA:
 		p = name;
 		while (len > 0) {
@@ -290,14 +292,13 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 int ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		   struct dx_hash_info *hinfo)
 {
-#if IS_ENABLED(CONFIG_UNICODE)
+#ifdef CONFIG_UNICODE
 	const struct unicode_map *um = dir->i_sb->s_encoding;
 	int r, dlen;
 	unsigned char *buff;
 	struct qstr qstr = {.name = name, .len = len };
 
-	if (len && IS_CASEFOLDED(dir) && um &&
-	   (!IS_ENCRYPTED(dir) || fscrypt_has_encryption_key(dir))) {
+	if (len && needs_casefold(dir) && um) {
 		buff = kzalloc(sizeof(char) * PATH_MAX, GFP_KERNEL);
 		if (!buff)
 			return -ENOMEM;

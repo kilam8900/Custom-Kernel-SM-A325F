@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * TI/National Semiconductor LP3943 MFD Core Driver
  *
  * Copyright 2013 Texas Instruments
  *
  * Author: Milo Kim <milo.kim@ti.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  * Driver structure:
  *   LP3943 is an integrated device capable of driving 16 output channels.
@@ -102,7 +105,7 @@ static const struct regmap_config lp3943_regmap_config = {
 	.max_register = LP3943_MAX_REGISTERS,
 };
 
-static int lp3943_probe(struct i2c_client *cl)
+static int lp3943_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 {
 	struct lp3943 *lp3943;
 	struct device *dev = &cl->dev;
@@ -140,7 +143,7 @@ MODULE_DEVICE_TABLE(of, lp3943_of_match);
 #endif
 
 static struct i2c_driver lp3943_driver = {
-	.probe_new = lp3943_probe,
+	.probe = lp3943_probe,
 	.driver = {
 		.name = "lp3943",
 		.of_match_table = of_match_ptr(lp3943_of_match),

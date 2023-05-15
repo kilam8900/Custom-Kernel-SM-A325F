@@ -115,7 +115,7 @@ void ufs_free_fragments(struct inode *inode, u64 fragment, unsigned count)
 	
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	ufs_mark_sb_dirty(sb);
 
@@ -205,7 +205,7 @@ do_more:
 
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 
 	if (overflow) {
@@ -295,10 +295,14 @@ static void ufs_change_blocknr(struct inode *inode, sector_t beg,
 
 			if (!buffer_mapped(bh))
 					map_bh(bh, inode->i_sb, oldb + pos);
-			if (bh_read(bh, 0) < 0) {
-				ufs_error(inode->i_sb, __func__,
-					  "read of block failed\n");
-				break;
+			if (!buffer_uptodate(bh)) {
+				ll_rw_block(REQ_OP_READ, 0, 1, &bh);
+				wait_on_buffer(bh);
+				if (!buffer_uptodate(bh)) {
+					ufs_error(inode->i_sb, __func__,
+						  "read of block failed\n");
+					break;
+				}
 			}
 
 			UFSD(" change from %llu to %llu, pos %u\n",
@@ -543,7 +547,7 @@ static u64 ufs_add_fragments(struct inode *inode, u64 fragment,
 	/*
 	 * Block can be extended
 	 */
-	ucg->cg_time = ufs_get_seconds(sb);
+	ucg->cg_time = cpu_to_fs32(sb, get_seconds());
 	for (i = newcount; i < (uspi->s_fpb - fragoff); i++)
 		if (ubh_isclr (UCPI_UBH(ucpi), ucpi->c_freeoff, fragno + i))
 			break;
@@ -563,7 +567,7 @@ static u64 ufs_add_fragments(struct inode *inode, u64 fragment,
 	
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	ufs_mark_sb_dirty(sb);
 
@@ -635,7 +639,7 @@ cg_found:
 	if (!ufs_cg_chkmagic(sb, ucg)) 
 		ufs_panic (sb, "ufs_alloc_fragments",
 			"internal error, bad magic number on cg %u", cgno);
-	ucg->cg_time = ufs_get_seconds(sb);
+	ucg->cg_time = cpu_to_fs32(sb, get_seconds());
 
 	if (count == uspi->s_fpb) {
 		result = ufs_alloccg_block (inode, ucpi, goal, err);
@@ -684,7 +688,7 @@ cg_found:
 succed:
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	ufs_mark_sb_dirty(sb);
 

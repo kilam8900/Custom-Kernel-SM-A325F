@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2016 Broadcom Limited
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/device.h>
@@ -129,9 +137,7 @@ static int bcm_iproc_probe(struct platform_device *pdev)
 
 static int bcm_iproc_remove(struct platform_device *pdev)
 {
-	bcm_qspi_remove(pdev);
-
-	return 0;
+	return bcm_qspi_remove(pdev);
 }
 
 static const struct of_device_id bcm_iproc_of_match[] = {

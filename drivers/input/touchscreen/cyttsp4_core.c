@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * cyttsp4_core.c
  * Cypress TrueTouch(TM) Standard Product V4 Core driver module.
@@ -9,7 +8,18 @@
  *
  * Copyright (C) 2012 Cypress Semiconductor
  *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, and only version 2, as published by the
+ * Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  * Contact Cypress Semiconductor at www.cypress.com <ttdrivers@cypress.com>
+ *
  */
 
 #include "cyttsp4_core.h"
@@ -29,20 +39,6 @@
 #define CY_CORE_WAKEUP_TIMEOUT			500
 
 #define CY_CORE_STARTUP_RETRY_COUNT		3
-
-static const char * const cyttsp4_tch_abs_string[] = {
-	[CY_TCH_X]	= "X",
-	[CY_TCH_Y]	= "Y",
-	[CY_TCH_P]	= "P",
-	[CY_TCH_T]	= "T",
-	[CY_TCH_E]	= "E",
-	[CY_TCH_O]	= "O",
-	[CY_TCH_W]	= "W",
-	[CY_TCH_MAJ]	= "MAJ",
-	[CY_TCH_MIN]	= "MIN",
-	[CY_TCH_OR]	= "OR",
-	[CY_TCH_NUM_ABS] = "INVALID"
-};
 
 static const u8 ldr_exit[] = {
 	0xFF, 0x01, 0x3B, 0x00, 0x00, 0x4F, 0x6D, 0x17
@@ -205,21 +201,13 @@ static int cyttsp4_si_get_cydata(struct cyttsp4 *cd)
 	void *p;
 	int rc;
 
-	if (si->si_ofs.test_ofs <= si->si_ofs.cydata_ofs) {
-		dev_err(cd->dev,
-			"%s: invalid offset test_ofs: %zu, cydata_ofs: %zu\n",
-			__func__, si->si_ofs.test_ofs, si->si_ofs.cydata_ofs);
-		return -EINVAL;
-	}
-
 	si->si_ofs.cydata_size = si->si_ofs.test_ofs - si->si_ofs.cydata_ofs;
 	dev_dbg(cd->dev, "%s: cydata size: %zd\n", __func__,
 			si->si_ofs.cydata_size);
 
 	p = krealloc(si->si_ptrs.cydata, si->si_ofs.cydata_size, GFP_KERNEL);
 	if (p == NULL) {
-		dev_err(cd->dev, "%s: failed to allocate cydata memory\n",
-			__func__);
+		dev_err(cd->dev, "%s: fail alloc cydata memory\n", __func__);
 		return -ENOMEM;
 	}
 	si->si_ptrs.cydata = p;
@@ -282,19 +270,11 @@ static int cyttsp4_si_get_test_data(struct cyttsp4 *cd)
 	void *p;
 	int rc;
 
-	if (si->si_ofs.pcfg_ofs <= si->si_ofs.test_ofs) {
-		dev_err(cd->dev,
-			"%s: invalid offset pcfg_ofs: %zu, test_ofs: %zu\n",
-			__func__, si->si_ofs.pcfg_ofs, si->si_ofs.test_ofs);
-		return -EINVAL;
-	}
-
 	si->si_ofs.test_size = si->si_ofs.pcfg_ofs - si->si_ofs.test_ofs;
 
 	p = krealloc(si->si_ptrs.test, si->si_ofs.test_size, GFP_KERNEL);
 	if (p == NULL) {
-		dev_err(cd->dev, "%s: failed to allocate test memory\n",
-			__func__);
+		dev_err(cd->dev, "%s: fail alloc test memory\n", __func__);
 		return -ENOMEM;
 	}
 	si->si_ptrs.test = p;
@@ -341,20 +321,14 @@ static int cyttsp4_si_get_pcfg_data(struct cyttsp4 *cd)
 	void *p;
 	int rc;
 
-	if (si->si_ofs.opcfg_ofs <= si->si_ofs.pcfg_ofs) {
-		dev_err(cd->dev,
-			"%s: invalid offset opcfg_ofs: %zu, pcfg_ofs: %zu\n",
-			__func__, si->si_ofs.opcfg_ofs, si->si_ofs.pcfg_ofs);
-		return -EINVAL;
-	}
-
 	si->si_ofs.pcfg_size = si->si_ofs.opcfg_ofs - si->si_ofs.pcfg_ofs;
 
 	p = krealloc(si->si_ptrs.pcfg, si->si_ofs.pcfg_size, GFP_KERNEL);
 	if (p == NULL) {
-		dev_err(cd->dev, "%s: failed to allocate pcfg memory\n",
-			__func__);
-		return -ENOMEM;
+		rc = -ENOMEM;
+		dev_err(cd->dev, "%s: fail alloc pcfg memory r=%d\n",
+			__func__, rc);
+		return rc;
 	}
 	si->si_ptrs.pcfg = p;
 
@@ -393,20 +367,13 @@ static int cyttsp4_si_get_opcfg_data(struct cyttsp4 *cd)
 	void *p;
 	int rc;
 
-	if (si->si_ofs.ddata_ofs <= si->si_ofs.opcfg_ofs) {
-		dev_err(cd->dev,
-			"%s: invalid offset ddata_ofs: %zu, opcfg_ofs: %zu\n",
-			__func__, si->si_ofs.ddata_ofs, si->si_ofs.opcfg_ofs);
-		return -EINVAL;
-	}
-
 	si->si_ofs.opcfg_size = si->si_ofs.ddata_ofs - si->si_ofs.opcfg_ofs;
 
 	p = krealloc(si->si_ptrs.opcfg, si->si_ofs.opcfg_size, GFP_KERNEL);
 	if (p == NULL) {
-		dev_err(cd->dev, "%s: failed to allocate opcfg memory\n",
-			__func__);
-		return -ENOMEM;
+		dev_err(cd->dev, "%s: fail alloc opcfg memory\n", __func__);
+		rc = -ENOMEM;
+		goto cyttsp4_si_get_opcfg_data_exit;
 	}
 	si->si_ptrs.opcfg = p;
 
@@ -415,7 +382,7 @@ static int cyttsp4_si_get_opcfg_data(struct cyttsp4 *cd)
 	if (rc < 0) {
 		dev_err(cd->dev, "%s: fail read opcfg data r=%d\n",
 			__func__, rc);
-		return rc;
+		goto cyttsp4_si_get_opcfg_data_exit;
 	}
 	si->si_ofs.cmd_ofs = si->si_ptrs.opcfg->cmd_ofs;
 	si->si_ofs.rep_ofs = si->si_ptrs.opcfg->rep_ofs;
@@ -480,7 +447,8 @@ static int cyttsp4_si_get_opcfg_data(struct cyttsp4 *cd)
 	cyttsp4_pr_buf(cd->dev, cd->pr_buf, (u8 *)si->si_ptrs.opcfg,
 		si->si_ofs.opcfg_size, "sysinfo_opcfg_data");
 
-	return 0;
+cyttsp4_si_get_opcfg_data_exit:
+	return rc;
 }
 
 static int cyttsp4_si_get_ddata(struct cyttsp4 *cd)
@@ -758,7 +726,8 @@ static void cyttsp4_report_slot_liftoff(struct cyttsp4_mt_data *md,
 
 	for (t = 0; t < max_slots; t++) {
 		input_mt_slot(md->input, t);
-		input_mt_report_slot_inactive(md->input);
+		input_mt_report_slot_state(md->input,
+			MT_TOOL_FINGER, false);
 	}
 }
 
@@ -858,7 +827,7 @@ static void cyttsp4_final_sync(struct input_dev *input, int max_slots, int *ids)
 		if (ids[t])
 			continue;
 		input_mt_slot(input, t);
-		input_mt_report_slot_inactive(input);
+		input_mt_report_slot_state(input, MT_TOOL_FINGER, false);
 	}
 
 	input_sync(input);
@@ -1268,9 +1237,9 @@ static void cyttsp4_stop_wd_timer(struct cyttsp4 *cd)
 	del_timer_sync(&cd->watchdog_timer);
 }
 
-static void cyttsp4_watchdog_timer(struct timer_list *t)
+static void cyttsp4_watchdog_timer(unsigned long handle)
 {
-	struct cyttsp4 *cd = from_timer(cd, t, watchdog_timer);
+	struct cyttsp4 *cd = (struct cyttsp4 *)handle;
 
 	dev_vdbg(cd->dev, "%s: Watchdog timer triggered\n", __func__);
 
@@ -1744,6 +1713,7 @@ static void cyttsp4_free_si_ptrs(struct cyttsp4 *cd)
 	kfree(si->btn_rec_data);
 }
 
+#ifdef CONFIG_PM
 static int cyttsp4_core_sleep(struct cyttsp4 *cd)
 {
 	int rc;
@@ -1876,9 +1846,13 @@ static int cyttsp4_core_resume(struct device *dev)
 
 	return 0;
 }
+#endif
 
-EXPORT_GPL_RUNTIME_DEV_PM_OPS(cyttsp4_pm_ops,
-			      cyttsp4_core_suspend, cyttsp4_core_resume, NULL);
+const struct dev_pm_ops cyttsp4_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(cyttsp4_core_suspend, cyttsp4_core_resume)
+	SET_RUNTIME_PM_OPS(cyttsp4_core_suspend, cyttsp4_core_resume, NULL)
+};
+EXPORT_SYMBOL_GPL(cyttsp4_pm_ops);
 
 static int cyttsp4_mt_open(struct input_dev *input)
 {
@@ -2093,7 +2067,8 @@ struct cyttsp4 *cyttsp4_probe(const struct cyttsp4_bus_ops *ops,
 	}
 
 	/* Setup watchdog timer */
-	timer_setup(&cd->watchdog_timer, cyttsp4_watchdog_timer, 0);
+	setup_timer(&cd->watchdog_timer, cyttsp4_watchdog_timer,
+		(unsigned long)cd);
 
 	/*
 	 * call startup directly to ensure that the device

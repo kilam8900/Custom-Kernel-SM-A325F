@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * ATMEL I2C TPM AT97SC3204T
  *
@@ -14,6 +13,19 @@
  *
  * TGC status/locality/etc functions seen in the LPC implementation do not
  * seem to be present.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see http://www.gnu.org/licenses/>.
  */
 #include <linux/init.h>
 #include <linux/module.h>
@@ -34,7 +46,7 @@ struct priv_data {
 	/* This is the amount we read on the first try. 25 was chosen to fit a
 	 * fair number of read responses in the buffer so a 2nd retry can be
 	 * avoided in small message cases. */
-	u8 buffer[sizeof(struct tpm_header) + 25];
+	u8 buffer[sizeof(struct tpm_output_header) + 25];
 };
 
 static int i2c_atmel_send(struct tpm_chip *chip, u8 *buf, size_t len)
@@ -68,7 +80,8 @@ static int i2c_atmel_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 {
 	struct priv_data *priv = dev_get_drvdata(&chip->dev);
 	struct i2c_client *client = to_i2c_client(chip->dev.parent);
-	struct tpm_header *hdr = (struct tpm_header *)priv->buffer;
+	struct tpm_output_header *hdr =
+		(struct tpm_output_header *)priv->buffer;
 	u32 expected_len;
 	int rc;
 
@@ -146,7 +159,8 @@ static const struct tpm_class_ops i2c_atmel = {
 	.req_canceled = i2c_atmel_req_canceled,
 };
 
-static int i2c_atmel_probe(struct i2c_client *client)
+static int i2c_atmel_probe(struct i2c_client *client,
+			   const struct i2c_device_id *id)
 {
 	struct tpm_chip *chip;
 	struct device *dev = &client->dev;
@@ -178,11 +192,12 @@ static int i2c_atmel_probe(struct i2c_client *client)
 	return tpm_chip_register(chip);
 }
 
-static void i2c_atmel_remove(struct i2c_client *client)
+static int i2c_atmel_remove(struct i2c_client *client)
 {
 	struct device *dev = &(client->dev);
 	struct tpm_chip *chip = dev_get_drvdata(dev);
 	tpm_chip_unregister(chip);
+	return 0;
 }
 
 static const struct i2c_device_id i2c_atmel_id[] = {
@@ -203,7 +218,7 @@ static SIMPLE_DEV_PM_OPS(i2c_atmel_pm_ops, tpm_pm_suspend, tpm_pm_resume);
 
 static struct i2c_driver i2c_atmel_driver = {
 	.id_table = i2c_atmel_id,
-	.probe_new = i2c_atmel_probe,
+	.probe = i2c_atmel_probe,
 	.remove = i2c_atmel_remove,
 	.driver = {
 		.name = I2C_DRIVER_NAME,

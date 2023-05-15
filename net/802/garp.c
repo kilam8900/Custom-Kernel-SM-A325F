@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *	IEEE 802.1D Generic Attribute Registration Protocol (GARP)
  *
  *	Copyright (c) 2008 Patrick McHardy <kaber@trash.net>
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	version 2 as published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/timer.h>
@@ -203,19 +206,6 @@ static void garp_attr_destroy(struct garp_applicant *app, struct garp_attr *attr
 	kfree(attr);
 }
 
-static void garp_attr_destroy_all(struct garp_applicant *app)
-{
-	struct rb_node *node, *next;
-	struct garp_attr *attr;
-
-	for (node = rb_first(&app->gid);
-	     next = node ? rb_next(node) : NULL, node != NULL;
-	     node = next) {
-		attr = rb_entry(node, struct garp_attr, node);
-		garp_attr_destroy(app, attr);
-	}
-}
-
 static int garp_pdu_init(struct garp_applicant *app)
 {
 	struct sk_buff *skb;
@@ -407,13 +397,13 @@ static void garp_join_timer_arm(struct garp_applicant *app)
 {
 	unsigned long delay;
 
-	delay = get_random_u32_below(msecs_to_jiffies(garp_join_time));
+	delay = (u64)msecs_to_jiffies(garp_join_time) * prandom_u32() >> 32;
 	mod_timer(&app->join_timer, jiffies + delay);
 }
 
-static void garp_join_timer(struct timer_list *t)
+static void garp_join_timer(unsigned long data)
 {
-	struct garp_applicant *app = from_timer(app, t, join_timer);
+	struct garp_applicant *app = (struct garp_applicant *)data;
 
 	spin_lock(&app->lock);
 	garp_gid_event(app, GARP_EVENT_TRANSMIT_PDU);
@@ -594,7 +584,7 @@ int garp_init_applicant(struct net_device *dev, struct garp_application *appl)
 	spin_lock_init(&app->lock);
 	skb_queue_head_init(&app->queue);
 	rcu_assign_pointer(dev->garp_port->applicants[appl->type], app);
-	timer_setup(&app->join_timer, garp_join_timer, 0);
+	setup_timer(&app->join_timer, garp_join_timer, (unsigned long)app);
 	garp_join_timer_arm(app);
 	return 0;
 
@@ -618,11 +608,10 @@ void garp_uninit_applicant(struct net_device *dev, struct garp_application *appl
 
 	/* Delete timer and generate a final TRANSMIT_PDU event to flush out
 	 * all pending messages before the applicant is gone. */
-	timer_shutdown_sync(&app->join_timer);
+	del_timer_sync(&app->join_timer);
 
 	spin_lock_bh(&app->lock);
 	garp_gid_event(app, GARP_EVENT_TRANSMIT_PDU);
-	garp_attr_destroy_all(app);
 	garp_pdu_queue(app);
 	spin_unlock_bh(&app->lock);
 

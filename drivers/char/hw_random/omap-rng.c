@@ -22,7 +22,6 @@
 #include <linux/platform_device.h>
 #include <linux/hw_random.h>
 #include <linux/delay.h>
-#include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
 #include <linux/of.h>
@@ -30,7 +29,8 @@
 #include <linux/of_address.h>
 #include <linux/interrupt.h>
 #include <linux/clk.h>
-#include <linux/io.h>
+
+#include <asm/io.h>
 
 #define RNG_REG_STATUS_RDY			(1 << 0)
 
@@ -157,7 +157,6 @@ struct omap_rng_dev {
 	const struct omap_rng_pdata	*pdata;
 	struct hwrng rng;
 	struct clk 			*clk;
-	struct clk			*clk_reg;
 };
 
 static inline u32 omap_rng_read(struct omap_rng_dev *priv, u16 reg)
@@ -243,6 +242,7 @@ static struct omap_rng_pdata omap2_rng_pdata = {
 	.cleanup	= omap2_rng_cleanup,
 };
 
+#if defined(CONFIG_OF)
 static inline u32 omap4_rng_data_present(struct omap_rng_dev *priv)
 {
 	return omap_rng_read(priv, RNG_STATUS_REG) & RNG_REG_STATUS_RDY;
@@ -357,7 +357,7 @@ static struct omap_rng_pdata eip76_rng_pdata = {
 	.cleanup	= omap4_rng_cleanup,
 };
 
-static const struct of_device_id omap_rng_of_match[] __maybe_unused = {
+static const struct of_device_id omap_rng_of_match[] = {
 		{
 			.compatible	= "ti,omap2-rng",
 			.data		= &omap2_rng_pdata,
@@ -377,19 +377,25 @@ MODULE_DEVICE_TABLE(of, omap_rng_of_match);
 static int of_get_omap_rng_device_details(struct omap_rng_dev *priv,
 					  struct platform_device *pdev)
 {
+	const struct of_device_id *match;
 	struct device *dev = &pdev->dev;
 	int irq, err;
 
-	priv->pdata = of_device_get_match_data(dev);
-	if (!priv->pdata)
-		return -ENODEV;
-
+	match = of_match_device(of_match_ptr(omap_rng_of_match), dev);
+	if (!match) {
+		dev_err(dev, "no compatible OF match\n");
+		return -EINVAL;
+	}
+	priv->pdata = match->data;
 
 	if (of_device_is_compatible(dev->of_node, "ti,omap4-rng") ||
 	    of_device_is_compatible(dev->of_node, "inside-secure,safexcel-eip76")) {
 		irq = platform_get_irq(pdev, 0);
-		if (irq < 0)
+		if (irq < 0) {
+			dev_err(dev, "%s: error getting IRQ resource - %d\n",
+				__func__, irq);
 			return irq;
+		}
 
 		err = devm_request_irq(dev, irq, omap4_rng_irq,
 				       IRQF_TRIGGER_NONE, dev_name(dev), priv);
@@ -414,6 +420,13 @@ static int of_get_omap_rng_device_details(struct omap_rng_dev *priv,
 	}
 	return 0;
 }
+#else
+static int of_get_omap_rng_device_details(struct omap_rng_dev *omap_rng,
+					  struct platform_device *pdev)
+{
+	return -EINVAL;
+}
+#endif
 
 static int get_omap_rng_device_details(struct omap_rng_dev *omap_rng)
 {
@@ -425,6 +438,7 @@ static int get_omap_rng_device_details(struct omap_rng_dev *omap_rng)
 static int omap_rng_probe(struct platform_device *pdev)
 {
 	struct omap_rng_dev *priv;
+	struct resource *res;
 	struct device *dev = &pdev->dev;
 	int ret;
 
@@ -441,7 +455,8 @@ static int omap_rng_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, priv);
 	priv->dev = dev;
 
-	priv->base = devm_platform_ioremap_resource(pdev, 0);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	priv->base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(priv->base)) {
 		ret = PTR_ERR(priv->base);
 		goto err_ioremap;
@@ -454,14 +469,15 @@ static int omap_rng_probe(struct platform_device *pdev)
 	}
 
 	pm_runtime_enable(&pdev->dev);
-	ret = pm_runtime_resume_and_get(&pdev->dev);
+	ret = pm_runtime_get_sync(&pdev->dev);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "Failed to runtime_get device: %d\n", ret);
+		pm_runtime_put_noidle(&pdev->dev);
 		goto err_ioremap;
 	}
 
 	priv->clk = devm_clk_get(&pdev->dev, NULL);
-	if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
+	if (IS_ERR(priv->clk) && PTR_ERR(priv->clk) == -EPROBE_DEFER)
 		return -EPROBE_DEFER;
 	if (!IS_ERR(priv->clk)) {
 		ret = clk_prepare_enable(priv->clk);
@@ -472,25 +488,12 @@ static int omap_rng_probe(struct platform_device *pdev)
 		}
 	}
 
-	priv->clk_reg = devm_clk_get(&pdev->dev, "reg");
-	if (PTR_ERR(priv->clk_reg) == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
-	if (!IS_ERR(priv->clk_reg)) {
-		ret = clk_prepare_enable(priv->clk_reg);
-		if (ret) {
-			dev_err(&pdev->dev,
-				"Unable to enable the register clk: %d\n",
-				ret);
-			goto err_register;
-		}
-	}
-
 	ret = (dev->of_node) ? of_get_omap_rng_device_details(priv, pdev) :
 				get_omap_rng_device_details(priv);
 	if (ret)
 		goto err_register;
 
-	ret = devm_hwrng_register(&pdev->dev, &priv->rng);
+	ret = hwrng_register(&priv->rng);
 	if (ret)
 		goto err_register;
 
@@ -504,8 +507,8 @@ err_register:
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 
-	clk_disable_unprepare(priv->clk_reg);
-	clk_disable_unprepare(priv->clk);
+	if (!IS_ERR(priv->clk))
+		clk_disable_unprepare(priv->clk);
 err_ioremap:
 	dev_err(dev, "initialization failed.\n");
 	return ret;
@@ -515,14 +518,15 @@ static int omap_rng_remove(struct platform_device *pdev)
 {
 	struct omap_rng_dev *priv = platform_get_drvdata(pdev);
 
+	hwrng_unregister(&priv->rng);
 
 	priv->pdata->cleanup(priv);
 
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
 
-	clk_disable_unprepare(priv->clk);
-	clk_disable_unprepare(priv->clk_reg);
+	if (!IS_ERR(priv->clk))
+		clk_disable_unprepare(priv->clk);
 
 	return 0;
 }
@@ -542,9 +546,10 @@ static int __maybe_unused omap_rng_resume(struct device *dev)
 	struct omap_rng_dev *priv = dev_get_drvdata(dev);
 	int ret;
 
-	ret = pm_runtime_resume_and_get(dev);
+	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
 		dev_err(dev, "Failed to runtime_get device: %d\n", ret);
+		pm_runtime_put_noidle(dev);
 		return ret;
 	}
 

@@ -9,8 +9,9 @@
 #include <linux/mm.h>
 #include <linux/swap.h>
 #include <linux/preempt.h>
-#include <linux/pagemap.h>
 
+#include <asm/pgtable.h>
+#include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
@@ -127,7 +128,7 @@ void tlb_batch_add(struct mm_struct *mm, unsigned long vaddr,
 			goto no_cache_flush;
 
 		/* A real file page? */
-		mapping = page_mapping_file(page);
+		mapping = page_mapping(page);
 		if (!mapping)
 			goto no_cache_flush;
 

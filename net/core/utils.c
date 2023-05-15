@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	Generic address resultion entity
  *
@@ -8,6 +7,11 @@
  *	in{4,6}_pton YOSHIFUJI Hideaki, Copyright (C)2006 USAGI/WIDE Project
  *
  *	Created by Alexey Kuznetsov <kuznet@ms2.inr.ac.ru>
+ *
+ *	This program is free software; you can redistribute it and/or
+ *      modify it under the terms of the GNU General Public License
+ *      as published by the Free Software Foundation; either version
+ *      2 of the License, or (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -302,7 +306,7 @@ static int inet4_pton(const char *src, u16 port_num,
 		struct sockaddr_storage *addr)
 {
 	struct sockaddr_in *addr4 = (struct sockaddr_in *)addr;
-	size_t srclen = strlen(src);
+	int srclen = strlen(src);
 
 	if (srclen > INET_ADDRSTRLEN)
 		return -EINVAL;
@@ -322,7 +326,7 @@ static int inet6_pton(struct net *net, const char *src, u16 port_num,
 {
 	struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)addr;
 	const char *scope_delim;
-	size_t srclen = strlen(src);
+	int srclen = strlen(src);
 
 	if (srclen > INET6_ADDRSTRLEN)
 		return -EINVAL;
@@ -393,34 +397,11 @@ int inet_pton_with_scope(struct net *net, __kernel_sa_family_t af,
 		break;
 	default:
 		pr_err("unexpected address family %d\n", af);
-	}
+	};
 
 	return ret;
 }
 EXPORT_SYMBOL(inet_pton_with_scope);
-
-bool inet_addr_is_any(struct sockaddr *addr)
-{
-	if (addr->sa_family == AF_INET6) {
-		struct sockaddr_in6 *in6 = (struct sockaddr_in6 *)addr;
-		const struct sockaddr_in6 in6_any =
-			{ .sin6_addr = IN6ADDR_ANY_INIT };
-
-		if (!memcmp(in6->sin6_addr.s6_addr,
-			    in6_any.sin6_addr.s6_addr, 16))
-			return true;
-	} else if (addr->sa_family == AF_INET) {
-		struct sockaddr_in *in = (struct sockaddr_in *)addr;
-
-		if (in->sin_addr.s_addr == htonl(INADDR_ANY))
-			return true;
-	} else {
-		pr_warn("unexpected address family %u\n", addr->sa_family);
-	}
-
-	return false;
-}
-EXPORT_SYMBOL(inet_addr_is_any);
 
 void inet_proto_csum_replace4(__sum16 *sum, struct sk_buff *skb,
 			      __be32 from, __be32 to, bool pseudohdr)
@@ -476,9 +457,9 @@ void inet_proto_csum_replace_by_diff(__sum16 *sum, struct sk_buff *skb,
 				     __wsum diff, bool pseudohdr)
 {
 	if (skb->ip_summed != CHECKSUM_PARTIAL) {
-		csum_replace_by_diff(sum, diff);
+		*sum = csum_fold(csum_add(diff, ~csum_unfold(*sum)));
 		if (skb->ip_summed == CHECKSUM_COMPLETE && pseudohdr)
-			skb->csum = ~csum_sub(diff, skb->csum);
+			skb->csum = ~csum_add(diff, ~skb->csum);
 	} else if (pseudohdr) {
 		*sum = ~csum_fold(csum_add(diff, csum_unfold(*sum)));
 	}

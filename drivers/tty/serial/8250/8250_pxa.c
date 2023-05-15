@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *  drivers/tty/serial/8250/8250_pxa.c -- driver for PXA on-board UARTS
  *  Copyright:	(C) 2013 Sergei Ianovich <ynvich@gmail.com>
@@ -8,6 +7,12 @@
  *  Copyright:	(C) 2003 Monta Vista Software, Inc.
  *
  *  Based on drivers/serial/8250.c by Russell King.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
  */
 
 #include <linux/device.h>
@@ -18,10 +23,12 @@
 #include <linux/serial_core.h>
 #include <linux/serial_reg.h>
 #include <linux/of.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/clk.h>
+#include <linux/pm_runtime.h>
 
 #include "8250.h"
 
@@ -91,15 +98,12 @@ static int serial_pxa_probe(struct platform_device *pdev)
 {
 	struct uart_8250_port uart = {};
 	struct pxa8250_data *data;
-	struct resource *mmres;
-	int irq, ret;
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	struct resource *mmres, *irqres;
+	int ret;
 
 	mmres = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mmres)
+	irqres = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
+	if (!mmres || !irqres)
 		return -ENODEV;
 
 	data = devm_kzalloc(&pdev->dev, sizeof(*data), GFP_KERNEL);
@@ -122,9 +126,9 @@ static int serial_pxa_probe(struct platform_device *pdev)
 	uart.port.iotype = UPIO_MEM32;
 	uart.port.mapbase = mmres->start;
 	uart.port.regshift = 2;
-	uart.port.irq = irq;
+	uart.port.irq = irqres->start;
 	uart.port.fifosize = 64;
-	uart.port.flags = UPF_IOREMAP | UPF_SKIP_TEST | UPF_FIXED_TYPE;
+	uart.port.flags = UPF_IOREMAP | UPF_SKIP_TEST;
 	uart.port.dev = &pdev->dev;
 	uart.port.uartclk = clk_get_rate(data->clk);
 	uart.port.pm = serial_pxa_pm;

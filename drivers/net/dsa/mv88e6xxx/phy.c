@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Marvell 88e6xxx Ethernet switch PHY and PPU support
  *
  * Copyright (c) 2008 Marvell Semiconductor
  *
  * Copyright (c) 2017 Andrew Lunn <andrew@lunn.ch>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #include <linux/mdio.h>
@@ -53,38 +57,6 @@ int mv88e6xxx_phy_write(struct mv88e6xxx_chip *chip, int phy, int reg, u16 val)
 		return -EOPNOTSUPP;
 
 	return chip->info->ops->phy_write(chip, bus, addr, reg, val);
-}
-
-int mv88e6xxx_phy_read_c45(struct mv88e6xxx_chip *chip, int phy, int devad,
-			   int reg, u16 *val)
-{
-	int addr = phy; /* PHY devices addresses start at 0x0 */
-	struct mii_bus *bus;
-
-	bus = mv88e6xxx_default_mdio_bus(chip);
-	if (!bus)
-		return -EOPNOTSUPP;
-
-	if (!chip->info->ops->phy_read_c45)
-		return -EOPNOTSUPP;
-
-	return chip->info->ops->phy_read_c45(chip, bus, addr, devad, reg, val);
-}
-
-int mv88e6xxx_phy_write_c45(struct mv88e6xxx_chip *chip, int phy, int devad,
-			    int reg, u16 val)
-{
-	int addr = phy; /* PHY devices addresses start at 0x0 */
-	struct mii_bus *bus;
-
-	bus = mv88e6xxx_default_mdio_bus(chip);
-	if (!bus)
-		return -EOPNOTSUPP;
-
-	if (!chip->info->ops->phy_write_c45)
-		return -EOPNOTSUPP;
-
-	return chip->info->ops->phy_write_c45(chip, bus, addr, devad, reg, val);
 }
 
 static int mv88e6xxx_phy_page_get(struct mv88e6xxx_chip *chip, int phy, u8 page)
@@ -169,7 +141,7 @@ static void mv88e6xxx_phy_ppu_reenable_work(struct work_struct *ugly)
 
 	chip = container_of(ugly, struct mv88e6xxx_chip, ppu_work);
 
-	mv88e6xxx_reg_lock(chip);
+	mutex_lock(&chip->reg_lock);
 
 	if (mutex_trylock(&chip->ppu_mutex)) {
 		if (mv88e6xxx_phy_ppu_enable(chip) == 0)
@@ -177,12 +149,12 @@ static void mv88e6xxx_phy_ppu_reenable_work(struct work_struct *ugly)
 		mutex_unlock(&chip->ppu_mutex);
 	}
 
-	mv88e6xxx_reg_unlock(chip);
+	mutex_unlock(&chip->reg_lock);
 }
 
-static void mv88e6xxx_phy_ppu_reenable_timer(struct timer_list *t)
+static void mv88e6xxx_phy_ppu_reenable_timer(unsigned long _ps)
 {
-	struct mv88e6xxx_chip *chip = from_timer(chip, t, ppu_timer);
+	struct mv88e6xxx_chip *chip = (void *)_ps;
 
 	schedule_work(&chip->ppu_work);
 }
@@ -224,7 +196,8 @@ static void mv88e6xxx_phy_ppu_state_init(struct mv88e6xxx_chip *chip)
 {
 	mutex_init(&chip->ppu_mutex);
 	INIT_WORK(&chip->ppu_work, mv88e6xxx_phy_ppu_reenable_work);
-	timer_setup(&chip->ppu_timer, mv88e6xxx_phy_ppu_reenable_timer, 0);
+	setup_timer(&chip->ppu_timer, mv88e6xxx_phy_ppu_reenable_timer,
+		    (unsigned long)chip);
 }
 
 static void mv88e6xxx_phy_ppu_state_destroy(struct mv88e6xxx_chip *chip)

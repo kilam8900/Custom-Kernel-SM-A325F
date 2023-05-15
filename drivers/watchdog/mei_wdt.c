@@ -1,7 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Intel Management Engine Interface (Intel MEI) Linux driver
  * Copyright (c) 2015, Intel Corporation.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
  */
 
 #include <linux/module.h>
@@ -105,7 +113,7 @@ struct mei_wdt {
 #endif /* CONFIG_DEBUG_FS */
 };
 
-/**
+/*
  * struct mei_mc_hdr - Management Control Command Header
  *
  * @command: Management Control (0x2)
@@ -121,7 +129,7 @@ struct mei_mc_hdr {
 };
 
 /**
- * struct mei_wdt_start_request - watchdog start/ping
+ * struct mei_wdt_start_request watchdog start/ping
  *
  * @hdr: Management Control Command Header
  * @timeout: timeout value
@@ -134,7 +142,7 @@ struct mei_wdt_start_request {
 } __packed;
 
 /**
- * struct mei_wdt_start_response - watchdog start/ping response
+ * struct mei_wdt_start_response watchdog start/ping response
  *
  * @hdr: Management Control Command Header
  * @status: operation status
@@ -382,11 +390,12 @@ static int mei_wdt_register(struct mei_wdt *wdt)
 
 	watchdog_set_drvdata(&wdt->wdd, wdt);
 	watchdog_stop_on_reboot(&wdt->wdd);
-	watchdog_stop_on_unregister(&wdt->wdd);
 
 	ret = watchdog_register_device(&wdt->wdd);
-	if (ret)
+	if (ret) {
+		dev_err(dev, "unable to register watchdog device = %d.\n", ret);
 		watchdog_set_drvdata(&wdt->wdd, NULL);
+	}
 
 	wdt->state = MEI_WDT_IDLE;
 
@@ -474,7 +483,7 @@ out:
 		complete(&wdt->response);
 }
 
-/**
+/*
  * mei_wdt_notif - callback for event notification
  *
  * @cldev: bus device
@@ -517,11 +526,12 @@ static ssize_t mei_dbgfs_read_state(struct file *file, char __user *ubuf,
 				    size_t cnt, loff_t *ppos)
 {
 	struct mei_wdt *wdt = file->private_data;
-	char buf[32];
+	const size_t bufsz = 32;
+	char buf[bufsz];
 	ssize_t pos;
 
-	pos = scnprintf(buf, sizeof(buf), "state: %s\n",
-			mei_wdt_state_str(wdt->state));
+	pos = scnprintf(buf, bufsz, "state: %s\n",
+			 mei_wdt_state_str(wdt->state));
 
 	return simple_read_from_buffer(ubuf, cnt, ppos, buf, pos);
 }
@@ -538,23 +548,38 @@ static void dbgfs_unregister(struct mei_wdt *wdt)
 	wdt->dbgfs_dir = NULL;
 }
 
-static void dbgfs_register(struct mei_wdt *wdt)
+static int dbgfs_register(struct mei_wdt *wdt)
 {
-	struct dentry *dir;
+	struct dentry *dir, *f;
 
 	dir = debugfs_create_dir(KBUILD_MODNAME, NULL);
+	if (!dir)
+		return -ENOMEM;
+
 	wdt->dbgfs_dir = dir;
+	f = debugfs_create_file("state", S_IRUSR, dir, wdt, &dbgfs_fops_state);
+	if (!f)
+		goto err;
 
-	debugfs_create_file("state", S_IRUSR, dir, wdt, &dbgfs_fops_state);
+	f = debugfs_create_file("activation",  S_IRUSR,
+				dir, wdt, &dbgfs_fops_activation);
+	if (!f)
+		goto err;
 
-	debugfs_create_file("activation", S_IRUSR, dir, wdt,
-			    &dbgfs_fops_activation);
+	return 0;
+err:
+	dbgfs_unregister(wdt);
+	return -ENODEV;
 }
 
 #else
 
 static inline void dbgfs_unregister(struct mei_wdt *wdt) {}
-static inline void dbgfs_register(struct mei_wdt *wdt) {}
+
+static inline int dbgfs_register(struct mei_wdt *wdt)
+{
+	return 0;
+}
 #endif /* CONFIG_DEBUG_FS */
 
 static int mei_wdt_probe(struct mei_cl_device *cldev,
@@ -607,7 +632,8 @@ static int mei_wdt_probe(struct mei_cl_device *cldev,
 	if (ret)
 		goto err_disable;
 
-	dbgfs_register(wdt);
+	if (dbgfs_register(wdt))
+		dev_warn(&cldev->dev, "cannot register debugfs\n");
 
 	return 0;
 
@@ -620,7 +646,7 @@ err_out:
 	return ret;
 }
 
-static void mei_wdt_remove(struct mei_cl_device *cldev)
+static int mei_wdt_remove(struct mei_cl_device *cldev)
 {
 	struct mei_wdt *wdt = mei_cldev_get_drvdata(cldev);
 
@@ -637,6 +663,8 @@ static void mei_wdt_remove(struct mei_cl_device *cldev)
 	dbgfs_unregister(wdt);
 
 	kfree(wdt);
+
+	return 0;
 }
 
 #define MEI_UUID_WD UUID_LE(0x05B79A6F, 0x4628, 0x4D7F, \
@@ -660,5 +688,5 @@ static struct mei_cl_driver mei_wdt_driver = {
 module_mei_cl_driver(mei_wdt_driver);
 
 MODULE_AUTHOR("Intel Corporation");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Device driver for Intel MEI iAMT watchdog");

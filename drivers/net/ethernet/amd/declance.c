@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *    Lance ethernet driver for the MIPS processor based
  *      DECstation family
@@ -261,7 +260,6 @@ struct lance_private {
 	unsigned short busmaster_regval;
 
 	struct timer_list       multicast_timer;
-	struct net_device	*dev;
 
 	/* Pointers to the ring buffers as seen from the CPU */
 	char *rx_buf_ptr_cpu[RX_RING_SIZE];
@@ -608,7 +606,7 @@ static int lance_rx(struct net_device *dev)
 			len = (*rds_ptr(rd, mblength, lp->type) & 0xfff) - 4;
 			skb = netdev_alloc_skb(dev, len + 2);
 
-			if (!skb) {
+			if (skb == 0) {
 				dev->stats.rx_dropped++;
 				*rds_ptr(rd, mblength, lp->type) = 0;
 				*rds_ptr(rd, rmd1, lp->type) =
@@ -884,7 +882,7 @@ static inline int lance_reset(struct net_device *dev)
 	return status;
 }
 
-static void lance_tx_timeout(struct net_device *dev, unsigned int txqueue)
+static void lance_tx_timeout(struct net_device *dev)
 {
 	struct lance_private *lp = netdev_priv(dev);
 	volatile struct lance_regs *ll = lp->ll;
@@ -937,7 +935,7 @@ static netdev_tx_t lance_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	dev_kfree_skb(skb);
 
-	return NETDEV_TX_OK;
+ 	return NETDEV_TX_OK;
 }
 
 static void lance_load_multicast(struct net_device *dev)
@@ -1002,10 +1000,9 @@ static void lance_set_multicast(struct net_device *dev)
 	netif_wake_queue(dev);
 }
 
-static void lance_set_multicast_retry(struct timer_list *t)
+static void lance_set_multicast_retry(unsigned long _opaque)
 {
-	struct lance_private *lp = from_timer(lp, t, multicast_timer);
-	struct net_device *dev = lp->dev;
+	struct net_device *dev = (struct net_device *) _opaque;
 
 	lance_set_multicast(dev);
 }
@@ -1032,7 +1029,6 @@ static int dec_lance_probe(struct device *bdev, const int type)
 	int i, ret;
 	unsigned long esar_base;
 	unsigned char *esar;
-	u8 addr[ETH_ALEN];
 	const char *desc;
 
 	if (dec_lance_debug && version_printed++ == 0)
@@ -1229,8 +1225,7 @@ static int dec_lance_probe(struct device *bdev, const int type)
 		break;
 	}
 	for (i = 0; i < 6; i++)
-		addr[i] = esar[i * 4];
-	eth_hw_addr_set(dev, addr);
+		dev->dev_addr[i] = esar[i * 4];
 
 	printk("%s: %s, addr = %pM, irq = %d\n",
 	       name, desc, dev->dev_addr, dev->irq);
@@ -1253,9 +1248,9 @@ static int dec_lance_probe(struct device *bdev, const int type)
 	 * can occur from interrupts (ex. IPv6).  So we
 	 * use a timer to try again later when necessary. -DaveM
 	 */
-	lp->dev = dev;
-	timer_setup(&lp->multicast_timer, lance_set_multicast_retry, 0);
-
+	init_timer(&lp->multicast_timer);
+	lp->multicast_timer.data = (unsigned long) dev;
+	lp->multicast_timer.function = lance_set_multicast_retry;
 
 	ret = register_netdev(dev);
 	if (ret) {

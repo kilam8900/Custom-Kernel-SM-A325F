@@ -11,6 +11,7 @@
 #include <linux/mm.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/bootmem.h>
 #include <linux/memblock.h>
 #include <linux/kernel_stat.h>
 #include <linux/mc146818rtc.h>
@@ -19,12 +20,11 @@
 #include <linux/smp.h>
 #include <linux/pci.h>
 
-#include <asm/i8259.h>
-#include <asm/io_apic.h>
-#include <asm/acpi.h>
 #include <asm/irqdomain.h>
 #include <asm/mtrr.h>
 #include <asm/mpspec.h>
+#include <asm/pgalloc.h>
+#include <asm/io_apic.h>
 #include <asm/proto.h>
 #include <asm/bios_ebda.h>
 #include <asm/e820/api.h>
@@ -46,6 +46,11 @@ static int __init mpf_checksum(unsigned char *mp, int len)
 	return sum & 0xFF;
 }
 
+int __init default_mpc_apic_id(struct mpc_cpu *m)
+{
+	return m->apicid;
+}
+
 static void __init MP_processor_info(struct mpc_cpu *m)
 {
 	int apicid;
@@ -56,7 +61,7 @@ static void __init MP_processor_info(struct mpc_cpu *m)
 		return;
 	}
 
-	apicid = m->apicid;
+	apicid = x86_init.mpparse.mpc_apic_id(m);
 
 	if (m->cpuflag & CPU_BOOTPROCESSOR) {
 		bootup_cpu = " (Bootup-CPU)";
@@ -68,7 +73,7 @@ static void __init MP_processor_info(struct mpc_cpu *m)
 }
 
 #ifdef CONFIG_X86_IO_APIC
-static void __init mpc_oem_bus_info(struct mpc_bus *m, char *str)
+void __init default_mpc_oem_bus_info(struct mpc_bus *m, char *str)
 {
 	memcpy(str, m->bustype, 6);
 	str[6] = 0;
@@ -79,7 +84,7 @@ static void __init MP_bus_info(struct mpc_bus *m)
 {
 	char str[7];
 
-	mpc_oem_bus_info(m, str);
+	x86_init.mpparse.mpc_oem_bus_info(m, str);
 
 #if MAX_MP_BUSSES < 256
 	if (m->busid >= MAX_MP_BUSSES) {
@@ -95,6 +100,9 @@ static void __init MP_bus_info(struct mpc_bus *m)
 		mp_bus_id_to_type[m->busid] = MP_BUS_ISA;
 #endif
 	} else if (strncmp(str, BUSTYPE_PCI, sizeof(BUSTYPE_PCI) - 1) == 0) {
+		if (x86_init.mpparse.mpc_oem_pci_bus)
+			x86_init.mpparse.mpc_oem_pci_bus(m);
+
 		clear_bit(m->busid, mp_bus_not_pci);
 #ifdef CONFIG_EISA
 		mp_bus_id_to_type[m->busid] = MP_BUS_PCI;
@@ -190,6 +198,8 @@ static void __init smp_dump_mptable(struct mpc_table *mpc, unsigned char *mpt)
 			1, mpc, mpc->length, 1);
 }
 
+void __init default_smp_read_mpc_oem(struct mpc_table *mpc) { }
+
 static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 {
 	char str[16];
@@ -208,7 +218,14 @@ static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 	if (early)
 		return 1;
 
-	/* Now process the configuration blocks. */
+	if (mpc->oemptr)
+		x86_init.mpparse.smp_read_mpc_oem(mpc);
+
+	/*
+	 *      Now process the configuration blocks.
+	 */
+	x86_init.mpparse.mpc_record(0);
+
 	while (count < mpc->length) {
 		switch (*mpt) {
 		case MP_PROCESSOR:
@@ -239,6 +256,7 @@ static int __init smp_read_mpc(struct mpc_table *mpc, unsigned early)
 			count = mpc->length;
 			break;
 		}
+		x86_init.mpparse.mpc_record(1);
 	}
 
 	if (!num_processors)
@@ -252,7 +270,7 @@ static int __init ELCR_trigger(unsigned int irq)
 {
 	unsigned int port;
 
-	port = PIC_ELCR1 + (irq >> 3);
+	port = 0x4d0 + (irq >> 3);
 	return (inb(port) >> (irq & 7)) & 1;
 }
 
@@ -263,7 +281,7 @@ static void __init construct_default_ioirq_mptable(int mpc_default_type)
 	int ELCR_fallback = 0;
 
 	intsrc.type = MP_INTSRC;
-	intsrc.irqflag = MP_IRQTRIG_DEFAULT | MP_IRQPOL_DEFAULT;
+	intsrc.irqflag = 0;	/* conforming */
 	intsrc.srcbus = 0;
 	intsrc.dstapic = mpc_ioapic_id(0);
 
@@ -294,7 +312,7 @@ static void __init construct_default_ioirq_mptable(int mpc_default_type)
 		case 2:
 			if (i == 0 || i == 13)
 				continue;	/* IRQ0 & IRQ13 not connected */
-			fallthrough;
+			/* fall through */
 		default:
 			if (i == 2)
 				continue;	/* IRQ2 is never connected */
@@ -306,13 +324,10 @@ static void __init construct_default_ioirq_mptable(int mpc_default_type)
 			 *  copy that information over to the MP table in the
 			 *  irqflag field (level sensitive, active high polarity).
 			 */
-			if (ELCR_trigger(i)) {
-				intsrc.irqflag = MP_IRQTRIG_LEVEL |
-						 MP_IRQPOL_ACTIVE_HIGH;
-			} else {
-				intsrc.irqflag = MP_IRQTRIG_DEFAULT |
-						 MP_IRQPOL_DEFAULT;
-			}
+			if (ELCR_trigger(i))
+				intsrc.irqflag = 13;
+			else
+				intsrc.irqflag = 0;
 		}
 
 		intsrc.srcbusirq = i;
@@ -338,7 +353,7 @@ static void __init construct_ioapic_table(int mpc_default_type)
 	default:
 		pr_err("???\nUnknown standard configuration %d\n",
 		       mpc_default_type);
-		fallthrough;
+		/* fall through */
 	case 1:
 	case 5:
 		memcpy(bus.bustype, "ISA   ", 6);
@@ -404,7 +419,7 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 	construct_ioapic_table(mpc_default_type);
 
 	lintsrc.type = MP_LINTSRC;
-	lintsrc.irqflag = MP_IRQTRIG_DEFAULT | MP_IRQPOL_DEFAULT;
+	lintsrc.irqflag = 0;		/* conforming */
 	lintsrc.srcbusid = 0;
 	lintsrc.srcbusirq = 0;
 	lintsrc.destapic = MP_APIC_ALL;
@@ -647,7 +662,7 @@ static int  __init get_MP_intsrc_index(struct mpc_intsrc *m)
 	if (m->irqtype != mp_INT)
 		return 0;
 
-	if (m->irqflag != (MP_IRQTRIG_LEVEL | MP_IRQPOL_ACTIVE_LOW))
+	if (m->irqflag != 0x0f)
 		return 0;
 
 	/* not legacy */
@@ -656,8 +671,7 @@ static int  __init get_MP_intsrc_index(struct mpc_intsrc *m)
 		if (mp_irqs[i].irqtype != mp_INT)
 			continue;
 
-		if (mp_irqs[i].irqflag != (MP_IRQTRIG_LEVEL |
-					   MP_IRQPOL_ACTIVE_LOW))
+		if (mp_irqs[i].irqflag != 0x0f)
 			continue;
 
 		if (mp_irqs[i].srcbus != m->srcbus)
@@ -768,8 +782,7 @@ static int  __init replace_intsrc_all(struct mpc_table *mpc,
 		if (mp_irqs[i].irqtype != mp_INT)
 			continue;
 
-		if (mp_irqs[i].irqflag != (MP_IRQTRIG_LEVEL |
-					   MP_IRQPOL_ACTIVE_LOW))
+		if (mp_irqs[i].irqflag != 0x0f)
 			continue;
 
 		if (nr_m_spare > 0) {

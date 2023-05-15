@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/mount.h>
-#include <linux/pseudo_fs.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/proc_fs.h>
 #include <linux/proc_ns.h>
 #include <linux/magic.h>
 #include <linux/ktime.h>
@@ -12,8 +10,6 @@
 #include <linux/nsfs.h>
 #include <linux/uaccess.h>
 
-#include "internal.h"
-
 static struct vfsmount *nsfs_mnt;
 
 static long ns_ioctl(struct file *filp, unsigned int ioctl,
@@ -21,7 +17,6 @@ static long ns_ioctl(struct file *filp, unsigned int ioctl,
 static const struct file_operations ns_file_operations = {
 	.llseek		= no_llseek,
 	.unlocked_ioctl = ns_ioctl,
-	.compat_ioctl   = compat_ptr_ioctl,
 };
 
 static char *ns_dname(struct dentry *dentry, char *buffer, int buflen)
@@ -29,7 +24,7 @@ static char *ns_dname(struct dentry *dentry, char *buffer, int buflen)
 	struct inode *inode = d_inode(dentry);
 	const struct proc_ns_operations *ns_ops = dentry->d_fsdata;
 
-	return dynamic_dname(buffer, buflen, "%s:[%lu]",
+	return dynamic_dname(dentry, buffer, buflen, "%s:[%lu]",
 		ns_ops->name, inode->i_ino);
 }
 
@@ -56,7 +51,7 @@ static void nsfs_evict(struct inode *inode)
 	ns->ops->put(ns);
 }
 
-static int __ns_get_path(struct path *path, struct ns_common *ns)
+static void *__ns_get_path(struct path *path, struct ns_common *ns)
 {
 	struct vfsmount *mnt = nsfs_mnt;
 	struct dentry *dentry;
@@ -75,13 +70,13 @@ static int __ns_get_path(struct path *path, struct ns_common *ns)
 got_it:
 	path->mnt = mntget(mnt);
 	path->dentry = dentry;
-	return 0;
+	return NULL;
 slow:
 	rcu_read_unlock();
 	inode = new_inode_pseudo(mnt->mnt_sb);
 	if (!inode) {
 		ns->ops->put(ns);
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	}
 	inode->i_ino = ns->inum;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = current_time(inode);
@@ -90,59 +85,39 @@ slow:
 	inode->i_fop = &ns_file_operations;
 	inode->i_private = ns;
 
-	dentry = d_alloc_anon(mnt->mnt_sb);
+	dentry = d_alloc_pseudo(mnt->mnt_sb, &empty_name);
 	if (!dentry) {
 		iput(inode);
-		return -ENOMEM;
+		return ERR_PTR(-ENOMEM);
 	}
 	d_instantiate(dentry, inode);
+	dentry->d_flags |= DCACHE_RCUACCESS;
 	dentry->d_fsdata = (void *)ns->ops;
 	d = atomic_long_cmpxchg(&ns->stashed, 0, (unsigned long)dentry);
 	if (d) {
 		d_delete(dentry);	/* make sure ->d_prune() does nothing */
 		dput(dentry);
 		cpu_relax();
-		return -EAGAIN;
+		return ERR_PTR(-EAGAIN);
 	}
 	goto got_it;
 }
 
-int ns_get_path_cb(struct path *path, ns_get_path_helper_t *ns_get_cb,
-		     void *private_data)
+void *ns_get_path(struct path *path, struct task_struct *task,
+			const struct proc_ns_operations *ns_ops)
 {
-	int ret;
+	struct ns_common *ns;
+	void *ret;
 
-	do {
-		struct ns_common *ns = ns_get_cb(private_data);
-		if (!ns)
-			return -ENOENT;
-		ret = __ns_get_path(path, ns);
-	} while (ret == -EAGAIN);
+again:
+	ns = ns_ops->get(task);
+	if (!ns)
+		return ERR_PTR(-ENOENT);
 
+	ret = __ns_get_path(path, ns);
+	if (IS_ERR(ret) && PTR_ERR(ret) == -EAGAIN)
+		goto again;
 	return ret;
-}
-
-struct ns_get_path_task_args {
-	const struct proc_ns_operations *ns_ops;
-	struct task_struct *task;
-};
-
-static struct ns_common *ns_get_path_task(void *private_data)
-{
-	struct ns_get_path_task_args *args = private_data;
-
-	return args->ns_ops->get(args->task);
-}
-
-int ns_get_path(struct path *path, struct task_struct *task,
-		  const struct proc_ns_operations *ns_ops)
-{
-	struct ns_get_path_task_args args = {
-		.ns_ops	= ns_ops,
-		.task	= task,
-	};
-
-	return ns_get_path_cb(path, ns_get_path_task, &args);
 }
 
 int open_related_ns(struct ns_common *ns,
@@ -150,14 +125,14 @@ int open_related_ns(struct ns_common *ns,
 {
 	struct path path = {};
 	struct file *f;
-	int err;
+	void *err;
 	int fd;
 
 	fd = get_unused_fd_flags(O_CLOEXEC);
 	if (fd < 0)
 		return fd;
 
-	do {
+	while (1) {
 		struct ns_common *relative;
 
 		relative = get_ns(ns);
@@ -167,11 +142,13 @@ int open_related_ns(struct ns_common *ns,
 		}
 
 		err = __ns_get_path(&path, relative);
-	} while (err == -EAGAIN);
-
-	if (err) {
+		if (IS_ERR(err) && PTR_ERR(err) == -EAGAIN)
+			continue;
+		break;
+	}
+	if (IS_ERR(err)) {
 		put_unused_fd(fd);
-		return err;
+		return PTR_ERR(err);
 	}
 
 	f = dentry_open(&path, O_RDONLY, current_cred());
@@ -184,7 +161,6 @@ int open_related_ns(struct ns_common *ns,
 
 	return fd;
 }
-EXPORT_SYMBOL_GPL(open_related_ns);
 
 static long ns_ioctl(struct file *filp, unsigned int ioctl,
 			unsigned long arg)
@@ -230,11 +206,6 @@ int ns_get_name(char *buf, size_t size, struct task_struct *task,
 	return res;
 }
 
-bool proc_ns_file(const struct file *file)
-{
-	return file->f_op == &ns_file_operations;
-}
-
 struct file *proc_ns_fget(int fd)
 {
 	struct file *file;
@@ -253,20 +224,6 @@ out_invalid:
 	return ERR_PTR(-EINVAL);
 }
 
-/**
- * ns_match() - Returns true if current namespace matches dev/ino provided.
- * @ns: current namespace
- * @dev: dev_t from nsfs that will be matched against current nsfs
- * @ino: ino_t from nsfs that will be matched against current nsfs
- *
- * Return: true if dev and ino matches the current nsfs.
- */
-bool ns_match(const struct ns_common *ns, dev_t dev, ino_t ino)
-{
-	return (ns->inum == ino) && (nsfs_mnt->mnt_sb->s_dev == dev);
-}
-
-
 static int nsfs_show_path(struct seq_file *seq, struct dentry *dentry)
 {
 	struct inode *inode = d_inode(dentry);
@@ -281,20 +238,15 @@ static const struct super_operations nsfs_ops = {
 	.evict_inode = nsfs_evict,
 	.show_path = nsfs_show_path,
 };
-
-static int nsfs_init_fs_context(struct fs_context *fc)
+static struct dentry *nsfs_mount(struct file_system_type *fs_type,
+			int flags, const char *dev_name, void *data)
 {
-	struct pseudo_fs_context *ctx = init_pseudo(fc, NSFS_MAGIC);
-	if (!ctx)
-		return -ENOMEM;
-	ctx->ops = &nsfs_ops;
-	ctx->dops = &ns_dentry_operations;
-	return 0;
+	return mount_pseudo(fs_type, "nsfs:", &nsfs_ops,
+			&ns_dentry_operations, NSFS_MAGIC);
 }
-
 static struct file_system_type nsfs = {
 	.name = "nsfs",
-	.init_fs_context = nsfs_init_fs_context,
+	.mount = nsfs_mount,
 	.kill_sb = kill_anon_super,
 };
 
@@ -303,5 +255,5 @@ void __init nsfs_init(void)
 	nsfs_mnt = kern_mount(&nsfs);
 	if (IS_ERR(nsfs_mnt))
 		panic("can't set nsfs up\n");
-	nsfs_mnt->mnt_sb->s_flags &= ~SB_NOUSER;
+	nsfs_mnt->mnt_sb->s_flags &= ~MS_NOUSER;
 }

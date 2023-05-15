@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Support for GalaxyCore GC0310 VGA camera sensor.
  *
@@ -13,6 +12,10 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
+ * 02110-1301, USA.
  *
  */
 
@@ -33,11 +36,16 @@
 
 #include "../include/linux/atomisp_platform.h"
 
+#define GC0310_NAME		"gc0310"
+
 /* Defines for register writes and register array processing */
 #define I2C_MSG_LENGTH		1
 #define I2C_RETRY_COUNT		5
 
 #define GC0310_FOCAL_LENGTH_NUM	278	/*2.78mm*/
+#define GC0310_FOCAL_LENGTH_DEM	100
+#define GC0310_F_NUMBER_DEFAULT_NUM	26
+#define GC0310_F_NUMBER_DEM	10
 
 #define MAX_FMTS		1
 
@@ -123,6 +131,9 @@ struct gc0310_resolution {
 	u32 skip_frames;
 	u16 pixels_per_line;
 	u16 lines_per_frame;
+	u8 bin_factor_x;
+	u8 bin_factor_y;
+	u8 bin_mode;
 	bool used;
 };
 
@@ -143,9 +154,11 @@ struct gc0310_device {
 	struct v4l2_ctrl_handler ctrl_handler;
 
 	struct camera_sensor_platform_data *platform_data;
-	struct gc0310_resolution *res;
+	int vt_pix_clk_freq_mhz;
+	int fmt_idx;
+	int run_mode;
+	u8 res;
 	u8 type;
-	bool power_on;
 };
 
 enum gc0310_tok_type {
@@ -181,6 +194,11 @@ struct gc0310_write_buffer {
 struct gc0310_write_ctrl {
 	int index;
 	struct gc0310_write_buffer buffer;
+};
+
+static const struct i2c_device_id gc0310_id[] = {
+	{GC0310_NAME, 0},
+	{}
 };
 
 /*
@@ -337,7 +355,7 @@ static const struct gc0310_reg gc0310_reset_register[] = {
 /////////////////////////////////////////////////
 	{GC0310_8BIT, 0xfe, 0x01},
 	{GC0310_8BIT, 0x45, 0xa4}, // 0xf7
-	{GC0310_8BIT, 0x46, 0xf0}, // 0xff //f0//sun value th
+	{GC0310_8BIT, 0x46, 0xf0}, // 0xff //f0//sun vaule th
 	{GC0310_8BIT, 0x48, 0x03}, //sun mode
 	{GC0310_8BIT, 0x4f, 0x60}, //sun_clamp
 	{GC0310_8BIT, 0xfe, 0x00},
@@ -371,7 +389,8 @@ static struct gc0310_reg const gc0310_VGA_30fps[] = {
 	{GC0310_TOK_TERM, 0, 0},
 };
 
-static struct gc0310_resolution gc0310_res_preview[] = {
+
+struct gc0310_resolution gc0310_res_preview[] = {
 	{
 		.desc = "gc0310_VGA_30fps",
 		.width = 656, // 648,
@@ -383,13 +402,58 @@ static struct gc0310_resolution gc0310_res_preview[] = {
 		.pixels_per_line = 0x0314,
 		.lines_per_frame = 0x0213,
 #endif
+		.bin_factor_x = 1,
+		.bin_factor_y = 1,
+		.bin_mode = 0,
 		.skip_frames = 2,
 		.regs = gc0310_VGA_30fps,
 	},
 };
-
 #define N_RES_PREVIEW (ARRAY_SIZE(gc0310_res_preview))
+
+struct gc0310_resolution gc0310_res_still[] = {
+	{
+		.desc = "gc0310_VGA_30fps",
+		.width = 656, // 648,
+		.height = 496, // 488,
+		.fps = 30,
+		//.pix_clk_freq = 73,
+		.used = 0,
+#if 0
+		.pixels_per_line = 0x0314,
+		.lines_per_frame = 0x0213,
+#endif
+		.bin_factor_x = 1,
+		.bin_factor_y = 1,
+		.bin_mode = 0,
+		.skip_frames = 2,
+		.regs = gc0310_VGA_30fps,
+	},
+};
+#define N_RES_STILL (ARRAY_SIZE(gc0310_res_still))
+
+struct gc0310_resolution gc0310_res_video[] = {
+	{
+		.desc = "gc0310_VGA_30fps",
+		.width = 656, // 648,
+		.height = 496, // 488,
+		.fps = 30,
+		//.pix_clk_freq = 73,
+		.used = 0,
+#if 0
+		.pixels_per_line = 0x0314,
+		.lines_per_frame = 0x0213,
+#endif
+		.bin_factor_x = 1,
+		.bin_factor_y = 1,
+		.bin_mode = 0,
+		.skip_frames = 2,
+		.regs = gc0310_VGA_30fps,
+	},
+};
+#define N_RES_VIDEO (ARRAY_SIZE(gc0310_res_video))
 
 static struct gc0310_resolution *gc0310_res = gc0310_res_preview;
 static unsigned long N_RES = N_RES_PREVIEW;
 #endif
+

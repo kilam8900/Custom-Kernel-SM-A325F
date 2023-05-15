@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * dbgp.c -- EHCI Debug Port device gadget
  *
@@ -357,7 +356,6 @@ static int dbgp_setup(struct usb_gadget *gadget,
 		}
 	}
 
-
 	if (request == USB_REQ_GET_DESCRIPTOR) {
 		switch (value>>8) {
 		case USB_DT_DEVICE:
@@ -422,7 +420,7 @@ static struct usb_gadget_driver dbgp_driver = {
 
 static int __init dbgp_init(void)
 {
-	return usb_gadget_register_driver(&dbgp_driver);
+	return usb_gadget_probe_driver(&dbgp_driver);
 }
 
 static void __exit dbgp_exit(void)

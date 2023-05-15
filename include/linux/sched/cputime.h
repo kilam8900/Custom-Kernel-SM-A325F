@@ -8,17 +8,25 @@
  * cputime accounting APIs:
  */
 
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+#include <asm/cputime.h>
+
+#ifndef cputime_to_nsecs
+# define cputime_to_nsecs(__ct)	\
+	(cputime_to_usecs(__ct) * NSEC_PER_USEC)
+#endif
+#endif /* CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
+
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
-extern bool task_cputime(struct task_struct *t,
+extern void task_cputime(struct task_struct *t,
 			 u64 *utime, u64 *stime);
 extern u64 task_gtime(struct task_struct *t);
 #else
-static inline bool task_cputime(struct task_struct *t,
+static inline void task_cputime(struct task_struct *t,
 				u64 *utime, u64 *stime)
 {
 	*utime = t->utime;
 	*stime = t->stime;
-	return false;
 }
 
 static inline u64 task_gtime(struct task_struct *t)
@@ -46,14 +54,14 @@ static inline void task_cputime_scaled(struct task_struct *t,
 
 extern void task_cputime_adjusted(struct task_struct *p, u64 *ut, u64 *st);
 extern void thread_group_cputime_adjusted(struct task_struct *p, u64 *ut, u64 *st);
-extern void cputime_adjust(struct task_cputime *curr, struct prev_cputime *prev,
-			   u64 *ut, u64 *st);
+
 
 /*
  * Thread group CPU time accounting.
  */
 void thread_group_cputime(struct task_struct *tsk, struct task_cputime *times);
-void thread_group_sample_cputime(struct task_struct *tsk, u64 *samples);
+void thread_group_cputimer(struct task_struct *tsk, struct task_cputime *times);
+
 
 /*
  * The following are functions that support scheduler-internal time accounting.
@@ -62,7 +70,7 @@ void thread_group_sample_cputime(struct task_struct *tsk, u64 *samples);
  */
 
 /**
- * get_running_cputimer - return &tsk->signal->cputimer if cputimers are active
+ * get_running_cputimer - return &tsk->signal->cputimer if cputimer is running
  *
  * @tsk:	Pointer to target task.
  */
@@ -72,11 +80,8 @@ struct thread_group_cputimer *get_running_cputimer(struct task_struct *tsk)
 {
 	struct thread_group_cputimer *cputimer = &tsk->signal->cputimer;
 
-	/*
-	 * Check whether posix CPU timers are active. If not the thread
-	 * group accounting is not active either. Lockless check.
-	 */
-	if (!READ_ONCE(tsk->signal->posix_cputimers.timers_active))
+	/* Check if cputimer isn't running. This is accessed without locking. */
+	if (!READ_ONCE(cputimer->running))
 		return NULL;
 
 	/*

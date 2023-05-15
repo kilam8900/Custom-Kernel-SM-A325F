@@ -2,16 +2,9 @@
 #ifndef __ACPI_PROCESSOR_H
 #define __ACPI_PROCESSOR_H
 
+#include <linux/kernel.h>
 #include <linux/cpu.h>
-#include <linux/cpufreq.h>
-#include <linux/pm_qos.h>
-#include <linux/printk.h>
-#include <linux/sched.h>
-#include <linux/smp.h>
 #include <linux/thermal.h>
-#include <linux/types.h>
-#include <linux/workqueue.h>
-
 #include <asm/acpi.h>
 
 #define ACPI_PROCESSOR_CLASS		"processor"
@@ -237,8 +230,6 @@ struct acpi_processor {
 	struct acpi_processor_limit limit;
 	struct thermal_cooling_device *cdev;
 	struct device *dev; /* Processor device. */
-	struct freq_qos_request perflib_req;
-	struct freq_qos_request thermal_req;
 };
 
 struct acpi_processor_errata {
@@ -263,8 +254,6 @@ int acpi_processor_pstate_control(void);
 /* note: this locks both the calling module and the processor module
          if a _PPC object exists, rmmod is disallowed then */
 int acpi_processor_notify_smm(struct module *calling_module);
-int acpi_processor_get_psd(acpi_handle handle,
-			   struct acpi_psd_package *pdomain);
 
 /* parsing the _P* objects. */
 extern int acpi_processor_get_performance_info(struct acpi_processor *pr);
@@ -313,26 +302,20 @@ static inline int call_on_cpu(int cpu, long (*fn)(void *), void *arg,
 /* in processor_perflib.c */
 
 #ifdef CONFIG_CPU_FREQ
-extern bool acpi_processor_cpufreq_init;
-void acpi_processor_ignore_ppc_init(void);
-void acpi_processor_ppc_init(struct cpufreq_policy *policy);
-void acpi_processor_ppc_exit(struct cpufreq_policy *policy);
+void acpi_processor_ppc_init(void);
+void acpi_processor_ppc_exit(void);
 void acpi_processor_ppc_has_changed(struct acpi_processor *pr, int event_flag);
 extern int acpi_processor_get_bios_limit(int cpu, unsigned int *limit);
 #else
-static inline void acpi_processor_ignore_ppc_init(void)
+static inline void acpi_processor_ppc_init(void)
 {
 	return;
 }
-static inline void acpi_processor_ppc_init(struct cpufreq_policy *policy)
+static inline void acpi_processor_ppc_exit(void)
 {
 	return;
 }
-static inline void acpi_processor_ppc_exit(struct cpufreq_policy *policy)
-{
-	return;
-}
-static inline void acpi_processor_ppc_has_changed(struct acpi_processor *pr,
+static inline int acpi_processor_ppc_has_changed(struct acpi_processor *pr,
 								int event_flag)
 {
 	static unsigned int printout = 1;
@@ -343,6 +326,7 @@ static inline void acpi_processor_ppc_has_changed(struct acpi_processor *pr,
 		       "Consider compiling CPUfreq support into your kernel.\n");
 		printout = 0;
 	}
+	return 0;
 }
 static inline int acpi_processor_get_bios_limit(int cpu, unsigned int *limit)
 {
@@ -441,33 +425,20 @@ static inline int acpi_processor_hotplug(struct acpi_processor *pr)
 #endif /* CONFIG_ACPI_PROCESSOR_IDLE */
 
 /* in processor_thermal.c */
-int acpi_processor_thermal_init(struct acpi_processor *pr,
-				struct acpi_device *device);
-void acpi_processor_thermal_exit(struct acpi_processor *pr,
-				 struct acpi_device *device);
+int acpi_processor_get_limit_info(struct acpi_processor *pr);
 extern const struct thermal_cooling_device_ops processor_cooling_ops;
-#ifdef CONFIG_CPU_FREQ
-void acpi_thermal_cpufreq_init(struct cpufreq_policy *policy);
-void acpi_thermal_cpufreq_exit(struct cpufreq_policy *policy);
+#if defined(CONFIG_ACPI_CPU_FREQ_PSS) & defined(CONFIG_CPU_FREQ)
+void acpi_thermal_cpufreq_init(void);
+void acpi_thermal_cpufreq_exit(void);
 #else
-static inline void acpi_thermal_cpufreq_init(struct cpufreq_policy *policy)
+static inline void acpi_thermal_cpufreq_init(void)
 {
 	return;
 }
-static inline void acpi_thermal_cpufreq_exit(struct cpufreq_policy *policy)
+static inline void acpi_thermal_cpufreq_exit(void)
 {
 	return;
 }
-#endif	/* CONFIG_CPU_FREQ */
-
-#ifdef CONFIG_ACPI_PROCESSOR_IDLE
-extern int acpi_processor_ffh_lpi_probe(unsigned int cpu);
-extern int acpi_processor_ffh_lpi_enter(struct acpi_lpi_state *lpi);
-#endif
-
-#ifdef CONFIG_ACPI_HOTPLUG_CPU
-extern int arch_register_cpu(int cpu);
-extern void arch_unregister_cpu(int cpu);
-#endif
+#endif	/* CONFIG_ACPI_CPU_FREQ_PSS */
 
 #endif

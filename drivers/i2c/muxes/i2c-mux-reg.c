@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * I2C multiplexer using a single register
  *
  * Copyright 2015 Freescale Semiconductor
  * York Sun  <yorksun@freescale.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
  */
 
 #include <linux/i2c.h>
@@ -103,9 +107,9 @@ static int i2c_mux_reg_probe_dt(struct regmux *mux,
 	put_device(&adapter->dev);
 
 	mux->data.n_values = of_get_child_count(np);
-	if (of_property_read_bool(np, "little-endian")) {
+	if (of_find_property(np, "little-endian", NULL)) {
 		mux->data.little_endian = true;
-	} else if (of_property_read_bool(np, "big-endian")) {
+	} else if (of_find_property(np, "big-endian", NULL)) {
 		mux->data.little_endian = false;
 	} else {
 #if defined(__BYTE_ORDER) ? __BYTE_ORDER == __LITTLE_ENDIAN : \
@@ -118,13 +122,18 @@ static int i2c_mux_reg_probe_dt(struct regmux *mux,
 #error Endianness not defined?
 #endif
 	}
-	mux->data.write_only = of_property_read_bool(np, "write-only");
+	if (of_find_property(np, "write-only", NULL))
+		mux->data.write_only = true;
+	else
+		mux->data.write_only = false;
 
-	values = devm_kcalloc(&pdev->dev,
-			      mux->data.n_values, sizeof(*mux->data.values),
+	values = devm_kzalloc(&pdev->dev,
+			      sizeof(*mux->data.values) * mux->data.n_values,
 			      GFP_KERNEL);
-	if (!values)
+	if (!values) {
+		dev_err(&pdev->dev, "Cannot allocate values array");
 		return -ENOMEM;
+	}
 
 	for_each_child_of_node(np, child) {
 		of_property_read_u32(child, "reg", values + i);
@@ -171,9 +180,10 @@ static int i2c_mux_reg_probe(struct platform_device *pdev)
 			sizeof(mux->data));
 	} else {
 		ret = i2c_mux_reg_probe_dt(mux, pdev);
-		if (ret < 0)
-			return dev_err_probe(&pdev->dev, ret,
-					     "Error parsing device tree");
+		if (ret < 0) {
+			dev_err(&pdev->dev, "Error parsing device tree");
+			return ret;
+		}
 	}
 
 	parent = i2c_get_adapter(mux->data.parent);
@@ -183,12 +193,13 @@ static int i2c_mux_reg_probe(struct platform_device *pdev)
 	if (!mux->data.reg) {
 		dev_info(&pdev->dev,
 			"Register not set, using platform resource\n");
-		mux->data.reg = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
+		res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+		mux->data.reg_size = resource_size(res);
+		mux->data.reg = devm_ioremap_resource(&pdev->dev, res);
 		if (IS_ERR(mux->data.reg)) {
 			ret = PTR_ERR(mux->data.reg);
 			goto err_put_parent;
 		}
-		mux->data.reg_size = resource_size(res);
 	}
 
 	if (mux->data.reg_size != 4 && mux->data.reg_size != 2 &&

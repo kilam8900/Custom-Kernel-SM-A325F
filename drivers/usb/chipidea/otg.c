@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * otg.c - ChipIdea USB IP core OTG driver
  *
  * Copyright (C) 2013 Freescale Semiconductor, Inc.
  *
  * Author: Peter Chen
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 /*
@@ -22,8 +25,7 @@
 #include "otg_fsm.h"
 
 /**
- * hw_read_otgsc - returns otgsc register bits value.
- * @ci: the controller
+ * hw_read_otgsc returns otgsc register bits value.
  * @mask: bitfield mask
  */
 u32 hw_read_otgsc(struct ci_hdrc *ci, u32 mask)
@@ -36,7 +38,7 @@ u32 hw_read_otgsc(struct ci_hdrc *ci, u32 mask)
 	 * detection overwrite OTGSC register value
 	 */
 	cable = &ci->platdata->vbus_extcon;
-	if (!IS_ERR(cable->edev) || ci->role_switch) {
+	if (!IS_ERR(cable->edev)) {
 		if (cable->changed)
 			val |= OTGSC_BSVIS;
 		else
@@ -54,7 +56,7 @@ u32 hw_read_otgsc(struct ci_hdrc *ci, u32 mask)
 	}
 
 	cable = &ci->platdata->id_extcon;
-	if (!IS_ERR(cable->edev) || ci->role_switch) {
+	if (!IS_ERR(cable->edev)) {
 		if (cable->changed)
 			val |= OTGSC_IDIS;
 		else
@@ -75,8 +77,7 @@ u32 hw_read_otgsc(struct ci_hdrc *ci, u32 mask)
 }
 
 /**
- * hw_write_otgsc - updates target bits of OTGSC register.
- * @ci: the controller
+ * hw_write_otgsc updates target bits of OTGSC register.
  * @mask: bitfield mask
  * @data: to be written
  */
@@ -85,7 +86,7 @@ void hw_write_otgsc(struct ci_hdrc *ci, u32 mask, u32 data)
 	struct ci_hdrc_cable *cable;
 
 	cable = &ci->platdata->vbus_extcon;
-	if (!IS_ERR(cable->edev) || ci->role_switch) {
+	if (!IS_ERR(cable->edev)) {
 		if (data & mask & OTGSC_BSVIS)
 			cable->changed = false;
 
@@ -99,7 +100,7 @@ void hw_write_otgsc(struct ci_hdrc *ci, u32 mask, u32 data)
 	}
 
 	cable = &ci->platdata->id_extcon;
-	if (!IS_ERR(cable->edev) || ci->role_switch) {
+	if (!IS_ERR(cable->edev)) {
 		if (data & mask & OTGSC_IDIS)
 			cable->changed = false;
 
@@ -140,9 +141,8 @@ void ci_handle_vbus_change(struct ci_hdrc *ci)
 }
 
 /**
- * hw_wait_vbus_lower_bsv - When we switch to device mode, the vbus value
- *                          should be lower than OTGSC_BSV before connecting
- *                          to host.
+ * When we switch to device mode, the vbus value should be lower
+ * than OTGSC_BSV before connecting to host.
  *
  * @ci: the controller
  *
@@ -165,22 +165,13 @@ static int hw_wait_vbus_lower_bsv(struct ci_hdrc *ci)
 	return 0;
 }
 
-void ci_handle_id_switch(struct ci_hdrc *ci)
+static void ci_handle_id_switch(struct ci_hdrc *ci)
 {
-	enum ci_role role;
+	enum ci_role role = ci_otg_role(ci);
 
-	mutex_lock(&ci->mutex);
-	role = ci_otg_role(ci);
 	if (role != ci->role) {
 		dev_dbg(ci->dev, "switching from %s to %s\n",
 			ci_role(ci)->name, ci->roles[role]->name);
-
-		if (ci->vbus_active && ci->role == CI_ROLE_GADGET)
-			/*
-			 * vbus disconnect event is lost due to role
-			 * switch occurs during system suspend.
-			 */
-			usb_gadget_vbus_disconnect(&ci->gadget);
 
 		ci_role_stop(ci);
 
@@ -200,7 +191,6 @@ void ci_handle_id_switch(struct ci_hdrc *ci)
 		if (role == CI_ROLE_GADGET)
 			ci_handle_vbus_change(ci);
 	}
-	mutex_unlock(&ci->mutex);
 }
 /**
  * ci_otg_work - perform otg (vbus/id) event handle
@@ -235,7 +225,7 @@ static void ci_otg_work(struct work_struct *work)
 
 /**
  * ci_hdrc_otg_init - initialize otg struct
- * @ci: the controller
+ * ci: the controller
  */
 int ci_hdrc_otg_init(struct ci_hdrc *ci)
 {
@@ -254,13 +244,14 @@ int ci_hdrc_otg_init(struct ci_hdrc *ci)
 
 /**
  * ci_hdrc_otg_destroy - destroy otg struct
- * @ci: the controller
+ * ci: the controller
  */
 void ci_hdrc_otg_destroy(struct ci_hdrc *ci)
 {
-	if (ci->wq)
+	if (ci->wq) {
+		flush_workqueue(ci->wq);
 		destroy_workqueue(ci->wq);
-
+	}
 	/* Disable all OTG irq and clear status */
 	hw_write_otgsc(ci, OTGSC_INT_EN_BITS | OTGSC_INT_STATUS_BITS,
 						OTGSC_INT_STATUS_BITS);

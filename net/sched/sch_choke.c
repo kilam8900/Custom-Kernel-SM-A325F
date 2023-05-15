@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * net/sched/sch_choke.c	CHOKE scheduler
  *
  * Copyright (c) 2011 Stephen Hemminger <shemminger@vyatta.com>
  * Copyright (c) 2011 Eric Dumazet <eric.dumazet@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
  */
 
 #include <linux/module.h>
@@ -60,6 +64,7 @@ struct choke_sched_data {
 		u32	forced_drop;	/* Forced drops, qavg > max_thresh */
 		u32	forced_mark;	/* Forced marks, qavg > max_thresh */
 		u32	pdrop;          /* Drops due to queue limits */
+		u32	other;          /* Drops due to drop() calls */
 		u32	matched;	/* Drops to flow match */
 	} stats;
 
@@ -130,6 +135,7 @@ static void choke_drop_by_idx(struct Qdisc *sch, unsigned int idx,
 }
 
 struct choke_skb_cb {
+	u16			classid;
 	u8			keys_valid;
 	struct			flow_keys_digest keys;
 };
@@ -138,6 +144,11 @@ static inline struct choke_skb_cb *choke_skb_cb(const struct sk_buff *skb)
 {
 	qdisc_cb_private_validate(skb, sizeof(struct choke_skb_cb));
 	return (struct choke_skb_cb *)qdisc_skb_cb(skb)->data;
+}
+
+static inline void choke_set_classid(struct sk_buff *skb, u16 classid)
+{
+	choke_skb_cb(skb)->classid = classid;
 }
 
 /*
@@ -183,7 +194,7 @@ static struct sk_buff *choke_peek_random(const struct choke_sched_data *q,
 	int retrys = 3;
 
 	do {
-		*pidx = (q->head + get_random_u32_below(choke_len(q))) & q->tab_mask;
+		*pidx = (q->head + prandom_u32_max(choke_len(q))) & q->tab_mask;
 		skb = q->tab[*pidx];
 		if (skb)
 			return skb;
@@ -314,6 +325,8 @@ static void choke_reset(struct Qdisc *sch)
 		rtnl_qdisc_drop(skb, sch);
 	}
 
+	sch->q.qlen = 0;
+	sch->qstats.backlog = 0;
 	if (q->tab)
 		memset(q->tab, 0, (q->tab_mask + 1) * sizeof(struct sk_buff *));
 	q->head = q->tail = 0;
@@ -332,8 +345,7 @@ static void choke_free(void *addr)
 	kvfree(addr);
 }
 
-static int choke_change(struct Qdisc *sch, struct nlattr *opt,
-			struct netlink_ext_ack *extack)
+static int choke_change(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct choke_sched_data *q = qdisc_priv(sch);
 	struct nlattr *tb[TCA_CHOKE_MAX + 1];
@@ -342,13 +354,11 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 	struct sk_buff **old = NULL;
 	unsigned int mask;
 	u32 max_P;
-	u8 *stab;
 
 	if (opt == NULL)
 		return -EINVAL;
 
-	err = nla_parse_nested_deprecated(tb, TCA_CHOKE_MAX, opt,
-					  choke_policy, NULL);
+	err = nla_parse_nested(tb, TCA_CHOKE_MAX, opt, choke_policy, NULL);
 	if (err < 0)
 		return err;
 
@@ -359,8 +369,8 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 	max_P = tb[TCA_CHOKE_MAX_P] ? nla_get_u32(tb[TCA_CHOKE_MAX_P]) : 0;
 
 	ctl = nla_data(tb[TCA_CHOKE_PARMS]);
-	stab = nla_data(tb[TCA_CHOKE_STAB]);
-	if (!red_check_params(ctl->qth_min, ctl->qth_max, ctl->Wlog, ctl->Scell_log, stab))
+
+	if (!red_check_params(ctl->qth_min, ctl->qth_max, ctl->Wlog))
 		return -EINVAL;
 
 	if (ctl->limit > CHOKE_MAX_QUEUE)
@@ -370,7 +380,7 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 	if (mask != q->tab_mask) {
 		struct sk_buff **ntab;
 
-		ntab = kvcalloc(mask + 1, sizeof(struct sk_buff *), GFP_KERNEL);
+		ntab = kvmalloc_array((mask + 1), sizeof(struct sk_buff *), GFP_KERNEL | __GFP_ZERO);
 		if (!ntab)
 			return -ENOMEM;
 
@@ -410,7 +420,7 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 
 	red_set_parms(&q->parms, ctl->qth_min, ctl->qth_max, ctl->Wlog,
 		      ctl->Plog, ctl->Scell_log,
-		      stab,
+		      nla_data(tb[TCA_CHOKE_STAB]),
 		      max_P);
 	red_set_vars(&q->vars);
 
@@ -422,10 +432,9 @@ static int choke_change(struct Qdisc *sch, struct nlattr *opt,
 	return 0;
 }
 
-static int choke_init(struct Qdisc *sch, struct nlattr *opt,
-		      struct netlink_ext_ack *extack)
+static int choke_init(struct Qdisc *sch, struct nlattr *opt)
 {
-	return choke_change(sch, opt, extack);
+	return choke_change(sch, opt);
 }
 
 static int choke_dump(struct Qdisc *sch, struct sk_buff *skb)
@@ -442,7 +451,7 @@ static int choke_dump(struct Qdisc *sch, struct sk_buff *skb)
 		.Scell_log	= q->parms.Scell_log,
 	};
 
-	opts = nla_nest_start_noflag(skb, TCA_OPTIONS);
+	opts = nla_nest_start(skb, TCA_OPTIONS);
 	if (opts == NULL)
 		goto nla_put_failure;
 
@@ -463,6 +472,7 @@ static int choke_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 		.early	= q->stats.prob_drop + q->stats.forced_drop,
 		.marked	= q->stats.prob_mark + q->stats.forced_mark,
 		.pdrop	= q->stats.pdrop,
+		.other	= q->stats.other,
 		.matched = q->stats.matched,
 	};
 

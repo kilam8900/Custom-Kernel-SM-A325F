@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0+ OR MIT
-//
-// Device Tree Source for UniPhier sLD8 Reference Board
-//
-// Copyright (C) 2015-2016 Socionext Inc.
-//   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
+/*
+ * Device Tree Source for UniPhier sLD8 Reference Board
+ *
+ * Copyright (C) 2015-2016 Socionext Inc.
+ *   Author: Masahiro Yamada <yamada.masahiro@socionext.com>
+ *
+ * SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+ */
 
 /dts-v1/;
 #include "uniphier-sld8.dtsi"
@@ -20,7 +22,7 @@
 
 	aliases {
 		serial0 = &serial0;
-		serial1 = &serialsc;
+		serial1 = &serial1;
 		serial2 = &serial2;
 		serial3 = &serial3;
 		i2c0 = &i2c0;
@@ -36,11 +38,7 @@
 };
 
 &ethsc {
-	interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
-};
-
-&serialsc {
-	interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+	interrupts = <0 48 4>;
 };
 
 &serial0 {
@@ -55,19 +53,7 @@
 	status = "okay";
 };
 
-&gpio {
-	xirq0-hog {
-		gpio-hog;
-		gpios = <UNIPHIER_GPIO_IRQ(0) 0>;
-		input;
-	};
-};
-
 &i2c0 {
-	status = "okay";
-};
-
-&sd {
 	status = "okay";
 };
 
@@ -85,8 +71,4 @@
 
 &nand {
 	status = "okay";
-
-	nand@0 {
-		reg = <0>;
-	};
 };

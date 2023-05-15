@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* net/atm/common.c - ATM sockets (common part for PVC and SVC) */
 
 /* Written 1995-2000 by Werner Almesberger, EPFL LRC/ICA */
@@ -15,7 +14,7 @@
 #include <linux/capability.h>
 #include <linux/mm.h>
 #include <linux/sched/signal.h>
-#include <linux/time64.h>	/* 64-bit time for seconds */
+#include <linux/time.h>		/* struct timeval */
 #include <linux/skbuff.h>
 #include <linux/bitops.h>
 #include <linux/init.h>
@@ -177,18 +176,18 @@ static void vcc_destroy_socket(struct sock *sk)
 
 	set_bit(ATM_VF_CLOSE, &vcc->flags);
 	clear_bit(ATM_VF_READY, &vcc->flags);
-	if (vcc->dev && vcc->dev->ops->close)
-		vcc->dev->ops->close(vcc);
-	if (vcc->push)
-		vcc->push(vcc, NULL); /* atmarpd has no push */
-	module_put(vcc->owner);
+	if (vcc->dev) {
+		if (vcc->dev->ops->close)
+			vcc->dev->ops->close(vcc);
+		if (vcc->push)
+			vcc->push(vcc, NULL); /* atmarpd has no push */
+		module_put(vcc->owner);
 
-	while ((skb = skb_dequeue(&sk->sk_receive_queue)) != NULL) {
-		atm_return(vcc, skb->truesize);
-		kfree_skb(skb);
-	}
+		while ((skb = skb_dequeue(&sk->sk_receive_queue)) != NULL) {
+			atm_return(vcc, skb->truesize);
+			kfree_skb(skb);
+		}
 
-	if (vcc->dev && vcc->dev->ops->owner) {
 		module_put(vcc->dev->ops->owner);
 		atm_dev_put(vcc->dev);
 	}
@@ -297,7 +296,7 @@ static int adjust_tp(struct atm_trafprm *tp, unsigned char aal)
 		break;
 	default:
 		pr_warn("AAL problems ... (%d)\n", aal);
-		fallthrough;
+		/* fall through */
 	case ATM_AAL5:
 		max_sdu = ATM_MAX_AAL5_PDU;
 	}
@@ -417,7 +416,7 @@ static int __vcc_connect(struct atm_vcc *vcc, struct atm_dev *dev, short vpi,
 	case ATM_NO_AAL:
 		/* ATM_AAL5 is also used in the "0 for default" case */
 		vcc->qos.aal = ATM_AAL5;
-		fallthrough;
+		/* fall through */
 	case ATM_AAL5:
 		error = atm_init_aal5(vcc);
 		vcc->stats = &dev->stats.aal5;
@@ -540,7 +539,7 @@ int vcc_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 	    !test_bit(ATM_VF_READY, &vcc->flags))
 		return 0;
 
-	skb = skb_recv_datagram(sk, flags, &error);
+	skb = skb_recv_datagram(sk, flags, flags & MSG_DONTWAIT, &error);
 	if (!skb)
 		return error;
 
@@ -553,7 +552,7 @@ int vcc_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 	error = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (error)
 		return error;
-	sock_recv_cmsgs(msg, sk, skb);
+	sock_recv_ts_and_drops(msg, sk, skb);
 
 	if (!(flags & MSG_PEEK)) {
 		pr_debug("%d -= %d\n", atomic_read(&sk->sk_rmem_alloc),
@@ -648,28 +647,28 @@ out:
 	return error;
 }
 
-__poll_t vcc_poll(struct file *file, struct socket *sock, poll_table *wait)
+unsigned int vcc_poll(struct file *file, struct socket *sock, poll_table *wait)
 {
 	struct sock *sk = sock->sk;
 	struct atm_vcc *vcc;
-	__poll_t mask;
+	unsigned int mask;
 
-	sock_poll_wait(file, sock, wait);
+	sock_poll_wait(file, sk_sleep(sk), wait);
 	mask = 0;
 
 	vcc = ATM_SD(sock);
 
 	/* exceptional events */
 	if (sk->sk_err)
-		mask = EPOLLERR;
+		mask = POLLERR;
 
 	if (test_bit(ATM_VF_RELEASED, &vcc->flags) ||
 	    test_bit(ATM_VF_CLOSE, &vcc->flags))
-		mask |= EPOLLHUP;
+		mask |= POLLHUP;
 
 	/* readable? */
 	if (!skb_queue_empty_lockless(&sk->sk_receive_queue))
-		mask |= EPOLLIN | EPOLLRDNORM;
+		mask |= POLLIN | POLLRDNORM;
 
 	/* writable? */
 	if (sock->state == SS_CONNECTING &&
@@ -678,7 +677,7 @@ __poll_t vcc_poll(struct file *file, struct socket *sock, poll_table *wait)
 
 	if (vcc->qos.txtp.traffic_class != ATM_NONE &&
 	    vcc_writable(sk))
-		mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
+		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
 
 	return mask;
 }
@@ -745,7 +744,7 @@ static int check_qos(const struct atm_qos *qos)
 }
 
 int vcc_setsockopt(struct socket *sock, int level, int optname,
-		   sockptr_t optval, unsigned int optlen)
+		   char __user *optval, unsigned int optlen)
 {
 	struct atm_vcc *vcc;
 	unsigned long value;
@@ -760,7 +759,7 @@ int vcc_setsockopt(struct socket *sock, int level, int optname,
 	{
 		struct atm_qos qos;
 
-		if (copy_from_sockptr(&qos, optval, sizeof(qos)))
+		if (copy_from_user(&qos, optval, sizeof(qos)))
 			return -EFAULT;
 		error = check_qos(&qos);
 		if (error)
@@ -774,7 +773,7 @@ int vcc_setsockopt(struct socket *sock, int level, int optname,
 		return 0;
 	}
 	case SO_SETCLP:
-		if (copy_from_sockptr(&value, optval, sizeof(value)))
+		if (get_user(value, (unsigned long __user *)optval))
 			return -EFAULT;
 		if (value)
 			vcc->atm_options |= ATM_ATMOPT_CLP;
@@ -782,8 +781,13 @@ int vcc_setsockopt(struct socket *sock, int level, int optname,
 			vcc->atm_options &= ~ATM_ATMOPT_CLP;
 		return 0;
 	default:
-		return -EINVAL;
+		if (level == SOL_SOCKET)
+			return -EINVAL;
+		break;
 	}
+	if (!vcc->dev || !vcc->dev->ops->setsockopt)
+		return -EINVAL;
+	return vcc->dev->ops->setsockopt(vcc, level, optname, optval, optlen);
 }
 
 int vcc_getsockopt(struct socket *sock, int level, int optname,
@@ -821,8 +825,13 @@ int vcc_getsockopt(struct socket *sock, int level, int optname,
 		return copy_to_user(optval, &pvc, sizeof(pvc)) ? -EFAULT : 0;
 	}
 	default:
-		return -EINVAL;
+		if (level == SOL_SOCKET)
+			return -EINVAL;
+		break;
 	}
+	if (!vcc->dev || !vcc->dev->ops->getsockopt)
+		return -EINVAL;
+	return vcc->dev->ops->getsockopt(vcc, level, optname, optval, len);
 }
 
 int register_atmdevice_notifier(struct notifier_block *nb)

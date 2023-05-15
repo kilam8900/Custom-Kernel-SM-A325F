@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* Intel i7 core/Nehalem Memory Controller kernel module
  *
  * This driver supports the memory controllers found on the Intel
@@ -6,10 +5,13 @@
  * Xeon 55xx and Xeon 56xx also known as Nehalem, Nehalem-EP, Lynnfield
  * and Westmere-EP.
  *
+ * This file may be distributed under the terms of the
+ * GNU General Public License version 2 only.
+ *
  * Copyright (c) 2009-2010 by:
  *	 Mauro Carvalho Chehab
  *
- * Red Hat Inc. https://www.redhat.com
+ * Red Hat Inc. http://www.redhat.com
  *
  * Forked and adapted from the i5400_edac driver
  *
@@ -459,7 +461,7 @@ static struct i7core_dev *alloc_i7core_dev(u8 socket,
 	if (!i7core_dev)
 		return NULL;
 
-	i7core_dev->pdev = kcalloc(table->n_devs, sizeof(*i7core_dev->pdev),
+	i7core_dev->pdev = kzalloc(sizeof(*i7core_dev->pdev) * table->n_devs,
 				   GFP_KERNEL);
 	if (!i7core_dev->pdev) {
 		kfree(i7core_dev);
@@ -585,7 +587,8 @@ static int get_dimm_config(struct mem_ctl_info *mci)
 			if (!DIMM_PRESENT(dimm_dod[j]))
 				continue;
 
-			dimm = edac_get_dimm(mci, i, j, 0);
+			dimm = EDAC_DIMM_PTR(mci->layers, mci->dimms, mci->n_layers,
+				       i, j, 0);
 			banks = numbank(MC_DOD_NUMBANK(dimm_dod[j]));
 			ranks = numrank(MC_DOD_NUMRANK(dimm_dod[j]));
 			rows = numrow(MC_DOD_NUMROW(dimm_dod[j]));
@@ -594,7 +597,7 @@ static int get_dimm_config(struct mem_ctl_info *mci)
 			/* DDR3 has 8 I/O banks */
 			size = (rows * cols * banks * ranks) >> (20 - 3);
 
-			edac_dbg(0, "\tdimm %d %d MiB offset: %x, bank: %d, rank: %d, row: %#x, col: %#x\n",
+			edac_dbg(0, "\tdimm %d %d Mb offset: %x, bank: %d, rank: %d, row: %#x, col: %#x\n",
 				 j, size,
 				 RANKOFFSET(dimm_dod[j]),
 				 banks, ranks, rows, cols);
@@ -721,7 +724,7 @@ static ssize_t i7core_inject_type_store(struct device *dev,
 					const char *data, size_t count)
 {
 	struct mem_ctl_info *mci = to_mci(dev);
-	struct i7core_pvt *pvt = mci->pvt_info;
+struct i7core_pvt *pvt = mci->pvt_info;
 	unsigned long value;
 	int rc;
 
@@ -1710,9 +1713,9 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 	if (uncorrected_error) {
 		core_err_cnt = 1;
 		if (ripv)
-			tp_event = HW_EVENT_ERR_UNCORRECTED;
-		else
 			tp_event = HW_EVENT_ERR_FATAL;
+		else
+			tp_event = HW_EVENT_ERR_UNCORRECTED;
 	} else {
 		tp_event = HW_EVENT_ERR_CORRECTED;
 	}
@@ -1749,7 +1752,7 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 		err = "write parity error";
 		break;
 	case 19:
-		err = "redundancy loss";
+		err = "redundacy loss";
 		break;
 	case 20:
 		err = "reserved";
@@ -1813,12 +1816,14 @@ static int i7core_mce_check_error(struct notifier_block *nb, unsigned long val,
 	struct mce *mce = (struct mce *)data;
 	struct i7core_dev *i7_dev;
 	struct mem_ctl_info *mci;
+	struct i7core_pvt *pvt;
 
 	i7_dev = get_i7core_dev(mce->socketid);
-	if (!i7_dev || (mce->kflags & MCE_HANDLED_CEC))
+	if (!i7_dev)
 		return NOTIFY_DONE;
 
 	mci = i7_dev->mci;
+	pvt = mci->pvt_info;
 
 	/*
 	 * Just let mcelog handle it if the error is
@@ -1834,8 +1839,7 @@ static int i7core_mce_check_error(struct notifier_block *nb, unsigned long val,
 	i7core_check_error(mci, mce);
 
 	/* Advise mcelog that the errors were handled */
-	mce->kflags |= MCE_HANDLED_EDAC;
-	return NOTIFY_OK;
+	return NOTIFY_STOP;
 }
 
 static struct notifier_block i7_mce_dec = {
@@ -2164,13 +2168,8 @@ static int i7core_register_mci(struct i7core_dev *i7core_dev)
 	mci->edac_ctl_cap = EDAC_FLAG_NONE;
 	mci->edac_cap = EDAC_FLAG_NONE;
 	mci->mod_name = "i7core_edac.c";
-
-	mci->ctl_name = kasprintf(GFP_KERNEL, "i7 core #%d", i7core_dev->socket);
-	if (!mci->ctl_name) {
-		rc = -ENOMEM;
-		goto fail1;
-	}
-
+	mci->ctl_name = kasprintf(GFP_KERNEL, "i7 core #%d",
+				  i7core_dev->socket);
 	mci->dev_name = pci_name(i7core_dev->pdev[0]);
 	mci->ctl_page_to_phys = NULL;
 
@@ -2224,8 +2223,6 @@ static int i7core_register_mci(struct i7core_dev *i7core_dev)
 
 fail0:
 	kfree(mci->ctl_name);
-
-fail1:
 	edac_mc_free(mci);
 	i7core_dev->mci = NULL;
 	return rc;
@@ -2391,7 +2388,7 @@ module_exit(i7core_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mauro Carvalho Chehab");
-MODULE_AUTHOR("Red Hat Inc. (https://www.redhat.com)");
+MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com)");
 MODULE_DESCRIPTION("MC Driver for Intel i7 Core memory controllers - "
 		   I7CORE_REVISION);
 

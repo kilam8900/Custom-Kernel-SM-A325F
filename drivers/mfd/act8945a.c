@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * MFD driver for Active-semi ACT8945a PMIC
  *
  * Copyright (C) 2015 Atmel Corporation.
  *
  * Author: Wenyou Yang <wenyou.yang@atmel.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under  the terms of the GNU General  Public License as published by the
+ * Free Software Foundation;  either version 2 of the License, or (at your
+ * option) any later version.
  */
 
 #include <linux/i2c.h>
@@ -28,7 +32,8 @@ static const struct regmap_config act8945a_regmap_config = {
 	.val_bits = 8,
 };
 
-static int act8945a_i2c_probe(struct i2c_client *i2c)
+static int act8945a_i2c_probe(struct i2c_client *i2c,
+			      const struct i2c_device_id *id)
 {
 	int ret;
 	struct regmap *regmap;
@@ -70,7 +75,7 @@ static struct i2c_driver act8945a_i2c_driver = {
 		   .name = "act8945a",
 		   .of_match_table = of_match_ptr(act8945a_of_match),
 	},
-	.probe_new = act8945a_i2c_probe,
+	.probe = act8945a_i2c_probe,
 	.id_table = act8945a_i2c_id,
 };
 

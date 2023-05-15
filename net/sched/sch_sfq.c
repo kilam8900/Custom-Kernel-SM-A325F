@@ -1,6 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * net/sched/sch_sfq.c	Stochastic Fairness Queueing discipline.
+ *
+ *		This program is free software; you can redistribute it and/or
+ *		modify it under the terms of the GNU General Public License
+ *		as published by the Free Software Foundation; either version
+ *		2 of the License, or (at your option) any later version.
  *
  * Authors:	Alexey Kuznetsov, <kuznet@ms2.inr.ac.ru>
  */
@@ -141,7 +145,6 @@ struct sfq_sched_data {
 	int		perturb_period;
 	unsigned int	quantum;	/* Allotment per round: MUST BE >= MTU */
 	struct timer_list perturb_timer;
-	struct Qdisc	*sch;
 };
 
 /*
@@ -178,7 +181,7 @@ static unsigned int sfq_classify(struct sk_buff *skb, struct Qdisc *sch,
 		return sfq_hash(q, skb) + 1;
 
 	*qerr = NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
-	result = tcf_classify(skb, NULL, fl, &res, false);
+	result = tcf_classify(skb, fl, &res, false);
 	if (result >= 0) {
 #ifdef CONFIG_NET_CLS_ACT
 		switch (result) {
@@ -186,7 +189,6 @@ static unsigned int sfq_classify(struct sk_buff *skb, struct Qdisc *sch,
 		case TC_ACT_QUEUED:
 		case TC_ACT_TRAP:
 			*qerr = NET_XMIT_SUCCESS | __NET_XMIT_STOLEN;
-			fallthrough;
 		case TC_ACT_SHOT:
 			return 0;
 		}
@@ -349,7 +351,7 @@ sfq_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 	unsigned int hash, dropped;
 	sfq_index x, qlen;
 	struct sfq_slot *slot;
-	int ret;
+	int uninitialized_var(ret);
 	struct sk_buff *head;
 	int delta;
 
@@ -602,10 +604,10 @@ drop:
 	qdisc_tree_reduce_backlog(sch, dropped, drop_len);
 }
 
-static void sfq_perturbation(struct timer_list *t)
+static void sfq_perturbation(unsigned long arg)
 {
-	struct sfq_sched_data *q = from_timer(q, t, perturb_timer);
-	struct Qdisc *sch = q->sch;
+	struct Qdisc *sch = (struct Qdisc *)arg;
+	struct sfq_sched_data *q = qdisc_priv(sch);
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 	siphash_key_t nkey;
 
@@ -647,7 +649,7 @@ static int sfq_change(struct Qdisc *sch, struct nlattr *opt)
 	}
 
 	if (ctl_v1 && !red_check_params(ctl_v1->qth_min, ctl_v1->qth_max,
-					ctl_v1->Wlog, ctl_v1->Scell_log, NULL))
+					ctl_v1->Wlog))
 		return -EINVAL;
 	if (ctl_v1 && ctl_v1->qth_min) {
 		p = kmalloc(sizeof(*p), GFP_KERNEL);
@@ -728,17 +730,16 @@ static void sfq_destroy(struct Qdisc *sch)
 	kfree(q->red_parms);
 }
 
-static int sfq_init(struct Qdisc *sch, struct nlattr *opt,
-		    struct netlink_ext_ack *extack)
+static int sfq_init(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct sfq_sched_data *q = qdisc_priv(sch);
 	int i;
 	int err;
 
-	q->sch = sch;
-	timer_setup(&q->perturb_timer, sfq_perturbation, TIMER_DEFERRABLE);
+	setup_deferrable_timer(&q->perturb_timer, sfq_perturbation,
+			       (unsigned long)sch);
 
-	err = tcf_block_get(&q->block, &q->filter_list, sch, extack);
+	err = tcf_block_get(&q->block, &q->filter_list);
 	if (err)
 		return err;
 
@@ -835,6 +836,8 @@ static unsigned long sfq_find(struct Qdisc *sch, u32 classid)
 static unsigned long sfq_bind(struct Qdisc *sch, unsigned long parent,
 			      u32 classid)
 {
+	/* we cannot bypass queue discipline anymore */
+	sch->flags &= ~TCQ_F_CAN_BYPASS;
 	return 0;
 }
 
@@ -842,8 +845,7 @@ static void sfq_unbind(struct Qdisc *q, unsigned long cl)
 {
 }
 
-static struct tcf_block *sfq_tcf_block(struct Qdisc *sch, unsigned long cl,
-				       struct netlink_ext_ack *extack)
+static struct tcf_block *sfq_tcf_block(struct Qdisc *sch, unsigned long cl)
 {
 	struct sfq_sched_data *q = qdisc_priv(sch);
 
@@ -888,12 +890,16 @@ static void sfq_walk(struct Qdisc *sch, struct qdisc_walker *arg)
 		return;
 
 	for (i = 0; i < q->divisor; i++) {
-		if (q->ht[i] == SFQ_EMPTY_SLOT) {
+		if (q->ht[i] == SFQ_EMPTY_SLOT ||
+		    arg->count < arg->skip) {
 			arg->count++;
 			continue;
 		}
-		if (!tc_qdisc_stats_dump(sch, i + 1, arg))
+		if (arg->fn(sch, i + 1, arg) < 0) {
+			arg->stop = 1;
 			break;
+		}
+		arg->count++;
 	}
 }
 

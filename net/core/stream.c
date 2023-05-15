@@ -32,14 +32,14 @@ void sk_stream_write_space(struct sock *sk)
 	struct socket *sock = sk->sk_socket;
 	struct socket_wq *wq;
 
-	if (__sk_stream_is_writeable(sk, 1) && sock) {
+	if (sk_stream_is_writeable(sk) && sock) {
 		clear_bit(SOCK_NOSPACE, &sock->flags);
 
 		rcu_read_lock();
 		wq = rcu_dereference(sk->sk_wq);
 		if (skwq_has_sleeper(wq))
-			wake_up_interruptible_poll(&wq->wait, EPOLLOUT |
-						EPOLLWRNORM | EPOLLWRBAND);
+			wake_up_interruptible_poll(&wq->wait, POLLOUT |
+						POLLWRNORM | POLLWRBAND);
 		if (wq && wq->fasync_list && !(sk->sk_shutdown & SEND_SHUTDOWN))
 			sock_wake_async(wq, SOCK_WAKE_SPACE, POLL_OUT);
 		rcu_read_unlock();
@@ -123,7 +123,7 @@ int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 	DEFINE_WAIT_FUNC(wait, woken_wake_function);
 
 	if (sk_stream_memory_free(sk))
-		current_timeo = vm_wait = get_random_u32_below(HZ / 5) + 2;
+		current_timeo = vm_wait = (prandom_u32() % (HZ / 5)) + 2;
 
 	add_wait_queue(sk_sleep(sk), &wait);
 
@@ -159,8 +159,7 @@ int sk_stream_wait_memory(struct sock *sk, long *timeo_p)
 		*timeo_p = current_timeo;
 	}
 out:
-	if (!sock_flag(sk, SOCK_DEAD))
-		remove_wait_queue(sk_sleep(sk), &wait);
+	remove_wait_queue(sk_sleep(sk), &wait);
 	return err;
 
 do_error:
@@ -196,19 +195,17 @@ void sk_stream_kill_queues(struct sock *sk)
 	/* First the read buffer. */
 	__skb_queue_purge(&sk->sk_receive_queue);
 
-	/* Next, the error queue.
-	 * We need to use queue lock, because other threads might
-	 * add packets to the queue without socket lock being held.
-	 */
-	skb_queue_purge(&sk->sk_error_queue);
+	/* Next, the error queue. */
+	__skb_queue_purge(&sk->sk_error_queue);
 
 	/* Next, the write queue. */
-	WARN_ON_ONCE(!skb_queue_empty(&sk->sk_write_queue));
+	WARN_ON(!skb_queue_empty(&sk->sk_write_queue));
 
 	/* Account for returned memory. */
-	sk_mem_reclaim_final(sk);
+	sk_mem_reclaim(sk);
 
-	WARN_ON_ONCE(sk->sk_wmem_queued);
+	WARN_ON(sk->sk_wmem_queued);
+	WARN_ON(sk->sk_forward_alloc);
 
 	/* It is _impossible_ for the backlog to contain anything
 	 * when we get here.  All user references to this socket

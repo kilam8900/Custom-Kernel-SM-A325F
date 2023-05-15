@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
- * NXP Wireless LAN device driver: functions for station ioctl
+ * Marvell Wireless LAN device driver: functions for station ioctl
  *
- * Copyright 2011-2020 NXP
+ * Copyright (C) 2011-2014, Marvell International Ltd.
+ *
+ * This software file (the "File") is distributed by Marvell International
+ * Ltd. under the terms of the GNU General Public License Version 2, June 1991
+ * (the "License").  You may use, redistribute and/or modify this File in
+ * accordance with the terms and conditions of the License, a copy of which
+ * is available by writing to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or on the
+ * worldwide web at http://www.gnu.org/licenses/old-licenses/gpl-2.0.txt.
+ *
+ * THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
+ * ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
+ * this warranty disclaimer.
  */
 
 #include "decl.h"
@@ -134,6 +146,7 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	size_t beacon_ie_len;
 	struct mwifiex_bss_priv *bss_priv = (void *)bss->priv;
 	const struct cfg80211_bss_ies *ies;
+	int ret;
 
 	rcu_read_lock();
 	ies = rcu_dereference(bss->ies);
@@ -177,7 +190,48 @@ int mwifiex_fill_new_bss_desc(struct mwifiex_private *priv,
 	if (bss_desc->cap_info_bitmap & WLAN_CAPABILITY_SPECTRUM_MGMT)
 		bss_desc->sensed_11h = true;
 
-	return mwifiex_update_bss_desc_with_ie(priv->adapter, bss_desc);
+	ret = mwifiex_update_bss_desc_with_ie(priv->adapter, bss_desc);
+	if (ret)
+		return ret;
+
+	/* Update HT40 capability based on current channel information */
+	if (bss_desc->bcn_ht_oper && bss_desc->bcn_ht_cap) {
+		u8 ht_param = bss_desc->bcn_ht_oper->ht_param;
+		u8 radio = mwifiex_band_to_radio_type(bss_desc->bss_band);
+		struct ieee80211_supported_band *sband =
+						priv->wdev.wiphy->bands[radio];
+		int freq = ieee80211_channel_to_frequency(bss_desc->channel,
+							  radio);
+		struct ieee80211_channel *chan =
+			ieee80211_get_channel(priv->adapter->wiphy, freq);
+
+		switch (ht_param & IEEE80211_HT_PARAM_CHA_SEC_OFFSET) {
+		case IEEE80211_HT_PARAM_CHA_SEC_ABOVE:
+			if (chan->flags & IEEE80211_CHAN_NO_HT40PLUS) {
+				sband->ht_cap.cap &=
+					~IEEE80211_HT_CAP_SUP_WIDTH_20_40;
+				sband->ht_cap.cap &= ~IEEE80211_HT_CAP_SGI_40;
+			} else {
+				sband->ht_cap.cap |=
+					IEEE80211_HT_CAP_SUP_WIDTH_20_40 |
+					IEEE80211_HT_CAP_SGI_40;
+			}
+			break;
+		case IEEE80211_HT_PARAM_CHA_SEC_BELOW:
+			if (chan->flags & IEEE80211_CHAN_NO_HT40MINUS) {
+				sband->ht_cap.cap &=
+					~IEEE80211_HT_CAP_SUP_WIDTH_20_40;
+				sband->ht_cap.cap &= ~IEEE80211_HT_CAP_SGI_40;
+			} else {
+				sband->ht_cap.cap |=
+					IEEE80211_HT_CAP_SUP_WIDTH_20_40 |
+					IEEE80211_HT_CAP_SGI_40;
+			}
+			break;
+		}
+	}
+
+	return 0;
 }
 
 void mwifiex_dnld_txpwr_table(struct mwifiex_private *priv)
@@ -417,8 +471,7 @@ int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
 		}
 		if (hs_cfg->is_invoke_hostcmd) {
 			if (hs_cfg->conditions == HS_CFG_CANCEL) {
-				if (!test_bit(MWIFIEX_IS_HS_CONFIGURED,
-					      &adapter->work_flags))
+				if (!adapter->is_hs_configured)
 					/* Already cancelled */
 					break;
 				/* Save previous condition */
@@ -534,7 +587,7 @@ int mwifiex_enable_hs(struct mwifiex_adapter *adapter)
 	memset(&hscfg, 0, sizeof(hscfg));
 	hscfg.is_invoke_hostcmd = true;
 
-	set_bit(MWIFIEX_IS_HS_ENABLING, &adapter->work_flags);
+	adapter->hs_enabling = true;
 	mwifiex_cancel_all_pending_cmd(adapter);
 
 	if (mwifiex_set_hs_params(mwifiex_get_priv(adapter,
@@ -600,8 +653,7 @@ int mwifiex_get_bss_info(struct mwifiex_private *priv,
 	else
 		info->wep_status = false;
 
-	info->is_hs_configured = test_bit(MWIFIEX_IS_HS_CONFIGURED,
-					  &adapter->work_flags);
+	info->is_hs_configured = adapter->is_hs_configured;
 	info->is_deep_sleep = adapter->is_deep_sleep;
 
 	return 0;
@@ -1313,8 +1365,8 @@ mwifiex_set_gen_ie_helper(struct mwifiex_private *priv, u8 *ie_data_ptr,
 			  u16 ie_len)
 {
 	struct ieee_types_vendor_header *pvendor_ie;
-	static const u8 wpa_oui[] = { 0x00, 0x50, 0xf2, 0x01 };
-	static const u8 wps_oui[] = { 0x00, 0x50, 0xf2, 0x04 };
+	const u8 wpa_oui[] = { 0x00, 0x50, 0xf2, 0x01 };
+	const u8 wps_oui[] = { 0x00, 0x50, 0xf2, 0x04 };
 	u16 unparsed_len = ie_len, cur_ie_len;
 
 	/* If the passed length is zero, reset the buffer */
@@ -1481,18 +1533,6 @@ int mwifiex_get_wakeup_reason(struct mwifiex_private *priv, u16 action,
 	status = mwifiex_send_cmd(priv, HostCmd_CMD_HS_WAKEUP_REASON,
 				  HostCmd_ACT_GEN_GET, 0, wakeup_reason,
 				  cmd_type == MWIFIEX_SYNC_CMD);
-
-	return status;
-}
-
-int mwifiex_get_chan_info(struct mwifiex_private *priv,
-			  struct mwifiex_channel_band *channel_band)
-{
-	int status = 0;
-
-	status = mwifiex_send_cmd(priv, HostCmd_CMD_STA_CONFIGURE,
-				  HostCmd_ACT_GEN_GET, 0, channel_band,
-				  MWIFIEX_SYNC_CMD);
 
 	return status;
 }

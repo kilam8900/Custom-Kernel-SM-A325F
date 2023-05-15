@@ -24,7 +24,8 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drmP.h>
+#include <drm/drm_crtc_helper.h>
 
 #include "nouveau_drv.h"
 #include "nouveau_encoder.h"
@@ -35,8 +36,7 @@
 
 #include <subdev/bios/gpio.h>
 #include <subdev/gpio.h>
-
-#include <nvif/timer.h>
+#include <subdev/timer.h>
 
 int nv04_dac_output_offset(struct drm_encoder *encoder)
 {
@@ -419,7 +419,7 @@ static void nv04_dac_commit(struct drm_encoder *encoder)
 	helper->dpms(encoder, DRM_MODE_DPMS_ON);
 
 	NV_DEBUG(drm, "Output %s is running on CRTC %d using output %c\n",
-		 nv04_encoder_get_connector(nv_encoder)->base.name,
+		 nouveau_encoder_connector_get(nv_encoder)->base.name,
 		 nv_crtc->index, '@' + ffs(nv_encoder->dcb->or));
 }
 
@@ -556,6 +556,6 @@ nv04_dac_create(struct drm_connector *connector, struct dcb_output *entry)
 	encoder->possible_crtcs = entry->heads;
 	encoder->possible_clones = 0;
 
-	drm_connector_attach_encoder(connector, encoder);
+	drm_mode_connector_attach_encoder(connector, encoder);
 	return 0;
 }

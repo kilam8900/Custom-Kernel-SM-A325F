@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Core driver for the pin control subsystem
  *
@@ -9,34 +8,35 @@
  * Author: Linus Walleij <linus.walleij@linaro.org>
  *
  * Copyright (C) 2012 NVIDIA CORPORATION. All rights reserved.
+ *
+ * License terms: GNU General Public License (GPL) version 2
  */
 #define pr_fmt(fmt) "pinctrl core: " fmt
 
-#include <linux/debugfs.h>
-#include <linux/device.h>
-#include <linux/err.h>
-#include <linux/export.h>
-#include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/kref.h>
-#include <linux/list.h>
-#include <linux/seq_file.h>
+#include <linux/export.h>
+#include <linux/init.h>
+#include <linux/device.h>
 #include <linux/slab.h>
-
+#include <linux/err.h>
+#include <linux/list.h>
+#include <linux/sysfs.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include <linux/pinctrl/consumer.h>
-#include <linux/pinctrl/devinfo.h>
-#include <linux/pinctrl/machine.h>
 #include <linux/pinctrl/pinctrl.h>
+#include <linux/pinctrl/machine.h>
 
 #ifdef CONFIG_GPIOLIB
-#include "../gpio/gpiolib.h"
 #include <asm-generic/gpio.h>
 #endif
 
 #include "core.h"
 #include "devicetree.h"
-#include "pinconf.h"
 #include "pinmux.h"
+#include "pinconf.h"
+
 
 static bool pinctrl_dummy_state;
 
@@ -100,7 +100,7 @@ EXPORT_SYMBOL_GPL(pinctrl_dev_get_drvdata);
  */
 struct pinctrl_dev *get_pinctrl_dev_from_devname(const char *devname)
 {
-	struct pinctrl_dev *pctldev;
+	struct pinctrl_dev *pctldev = NULL;
 
 	if (!devname)
 		return NULL;
@@ -127,7 +127,7 @@ struct pinctrl_dev *get_pinctrl_dev_from_of_node(struct device_node *np)
 	mutex_lock(&pinctrldev_list_mutex);
 
 	list_for_each_entry(pctldev, &pinctrldev_list, node)
-		if (device_match_of_node(pctldev->dev, np)) {
+		if (pctldev->dev->of_node == np) {
 			mutex_unlock(&pinctrldev_list_mutex);
 			return pctldev;
 		}
@@ -161,9 +161,9 @@ int pin_get_from_name(struct pinctrl_dev *pctldev, const char *name)
 }
 
 /**
- * pin_get_name() - look up a pin name from a pin id
+ * pin_get_name_from_id() - look up a pin name from a pin id
  * @pctldev: the pin control device to lookup the pin on
- * @pin: pin number/id to look up
+ * @name: the name of the pin to look up
  */
 const char *pin_get_name(struct pinctrl_dev *pctldev, const unsigned pin)
 {
@@ -178,7 +178,29 @@ const char *pin_get_name(struct pinctrl_dev *pctldev, const unsigned pin)
 
 	return desc->name;
 }
-EXPORT_SYMBOL_GPL(pin_get_name);
+
+/**
+ * pin_is_valid() - check if pin exists on controller
+ * @pctldev: the pin control device to check the pin on
+ * @pin: pin to check, use the local pin controller index number
+ *
+ * This tells us whether a certain pin exist on a certain pin controller or
+ * not. Pin lists may be sparse, so some pins may not exist.
+ */
+bool pin_is_valid(struct pinctrl_dev *pctldev, int pin)
+{
+	struct pin_desc *pindesc;
+
+	if (pin < 0)
+		return false;
+
+	mutex_lock(&pctldev->mutex);
+	pindesc = pin_desc_get(pctldev, pin);
+	mutex_unlock(&pctldev->mutex);
+
+	return pindesc != NULL;
+}
+EXPORT_SYMBOL_GPL(pin_is_valid);
 
 /* Deletes a range of pin descriptors */
 static void pinctrl_free_pindescs(struct pinctrl_dev *pctldev,
@@ -291,7 +313,7 @@ static inline int gpio_to_pin(struct pinctrl_gpio_range *range,
 static struct pinctrl_gpio_range *
 pinctrl_match_gpio_range(struct pinctrl_dev *pctldev, unsigned gpio)
 {
-	struct pinctrl_gpio_range *range;
+	struct pinctrl_gpio_range *range = NULL;
 
 	mutex_lock(&pctldev->mutex);
 	/* Loop over the ranges */
@@ -325,12 +347,7 @@ static bool pinctrl_ready_for_gpio_range(unsigned gpio)
 {
 	struct pinctrl_dev *pctldev;
 	struct pinctrl_gpio_range *range = NULL;
-	/*
-	 * FIXME: "gpio" here is a number in the global GPIO numberspace.
-	 * get rid of this from the ranges eventually and get the GPIO
-	 * descriptor from the gpio_chip.
-	 */
-	struct gpio_chip *chip = gpiod_to_chip(gpio_to_desc(gpio));
+	struct gpio_chip *chip = gpio_to_chip(gpio);
 
 	if (WARN(!chip, "no gpio_chip for gpio%i?", gpio))
 		return false;
@@ -376,7 +393,7 @@ static int pinctrl_get_device_gpio_range(unsigned gpio,
 					 struct pinctrl_dev **outdev,
 					 struct pinctrl_gpio_range **outrange)
 {
-	struct pinctrl_dev *pctldev;
+	struct pinctrl_dev *pctldev = NULL;
 
 	mutex_lock(&pinctrldev_list_mutex);
 
@@ -584,7 +601,7 @@ EXPORT_SYMBOL_GPL(pinctrl_generic_get_group_pins);
 /**
  * pinctrl_generic_get_group() - returns a pin group based on the number
  * @pctldev: pin controller device
- * @selector: group number
+ * @gselector: group number
  */
 struct group_desc *pinctrl_generic_get_group(struct pinctrl_dev *pctldev,
 					     unsigned int selector)
@@ -600,26 +617,6 @@ struct group_desc *pinctrl_generic_get_group(struct pinctrl_dev *pctldev,
 }
 EXPORT_SYMBOL_GPL(pinctrl_generic_get_group);
 
-static int pinctrl_generic_group_name_to_selector(struct pinctrl_dev *pctldev,
-						  const char *function)
-{
-	const struct pinctrl_ops *ops = pctldev->desc->pctlops;
-	int ngroups = ops->get_groups_count(pctldev);
-	int selector = 0;
-
-	/* See if this pctldev has this group */
-	while (selector < ngroups) {
-		const char *gname = ops->get_group_name(pctldev, selector);
-
-		if (gname && !strcmp(function, gname))
-			return selector;
-
-		selector++;
-	}
-
-	return -EINVAL;
-}
-
 /**
  * pinctrl_generic_add_group() - adds a new pin group
  * @pctldev: pin controller device
@@ -634,16 +631,6 @@ int pinctrl_generic_add_group(struct pinctrl_dev *pctldev, const char *name,
 			      int *pins, int num_pins, void *data)
 {
 	struct group_desc *group;
-	int selector;
-
-	if (!name)
-		return -EINVAL;
-
-	selector = pinctrl_generic_group_name_to_selector(pctldev, name);
-	if (selector >= 0)
-		return selector;
-
-	selector = pctldev->num_groups;
 
 	group = devm_kzalloc(pctldev->dev, sizeof(*group), GFP_KERNEL);
 	if (!group)
@@ -654,11 +641,12 @@ int pinctrl_generic_add_group(struct pinctrl_dev *pctldev, const char *name,
 	group->num_pins = num_pins;
 	group->data = data;
 
-	radix_tree_insert(&pctldev->pin_group_tree, selector, group);
+	radix_tree_insert(&pctldev->pin_group_tree, pctldev->num_groups,
+			  group);
 
 	pctldev->num_groups++;
 
-	return selector;
+	return 0;
 }
 EXPORT_SYMBOL_GPL(pinctrl_generic_add_group);
 
@@ -727,7 +715,7 @@ int pinctrl_get_group_selector(struct pinctrl_dev *pctldev,
 	while (group_selector < ngroups) {
 		const char *gname = pctlops->get_group_name(pctldev,
 							    group_selector);
-		if (gname && !strcmp(gname, pin_group)) {
+		if (!strcmp(gname, pin_group)) {
 			dev_dbg(pctldev->dev,
 				"found group selector %u for %s\n",
 				group_selector,
@@ -744,43 +732,15 @@ int pinctrl_get_group_selector(struct pinctrl_dev *pctldev,
 	return -EINVAL;
 }
 
-bool pinctrl_gpio_can_use_line(unsigned gpio)
-{
-	struct pinctrl_dev *pctldev;
-	struct pinctrl_gpio_range *range;
-	bool result;
-	int pin;
-
-	/*
-	 * Try to obtain GPIO range, if it fails
-	 * we're probably dealing with GPIO driver
-	 * without a backing pin controller - bail out.
-	 */
-	if (pinctrl_get_device_gpio_range(gpio, &pctldev, &range))
-		return true;
-
-	mutex_lock(&pctldev->mutex);
-
-	/* Convert to the pin controllers number space */
-	pin = gpio_to_pin(range, gpio);
-
-	result = pinmux_can_be_used_for_gpio(pctldev, pin);
-
-	mutex_unlock(&pctldev->mutex);
-
-	return result;
-}
-EXPORT_SYMBOL_GPL(pinctrl_gpio_can_use_line);
-
 /**
- * pinctrl_gpio_request() - request a single pin to be used as GPIO
+ * pinctrl_request_gpio() - request a single pin to be used as GPIO
  * @gpio: the GPIO pin number from the GPIO subsystem number space
  *
  * This function should *ONLY* be used from gpiolib-based GPIO drivers,
  * as part of their gpio_request() semantics, platforms and individual drivers
  * shall *NOT* request GPIO pins to be muxed in.
  */
-int pinctrl_gpio_request(unsigned gpio)
+int pinctrl_request_gpio(unsigned gpio)
 {
 	struct pinctrl_dev *pctldev;
 	struct pinctrl_gpio_range *range;
@@ -805,17 +765,17 @@ int pinctrl_gpio_request(unsigned gpio)
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(pinctrl_gpio_request);
+EXPORT_SYMBOL_GPL(pinctrl_request_gpio);
 
 /**
- * pinctrl_gpio_free() - free control on a single pin, currently used as GPIO
+ * pinctrl_free_gpio() - free control on a single pin, currently used as GPIO
  * @gpio: the GPIO pin number from the GPIO subsystem number space
  *
  * This function should *ONLY* be used from gpiolib-based GPIO drivers,
  * as part of their gpio_free() semantics, platforms and individual drivers
  * shall *NOT* request GPIO pins to be muxed out.
  */
-void pinctrl_gpio_free(unsigned gpio)
+void pinctrl_free_gpio(unsigned gpio)
 {
 	struct pinctrl_dev *pctldev;
 	struct pinctrl_gpio_range *range;
@@ -835,7 +795,7 @@ void pinctrl_gpio_free(unsigned gpio)
 
 	mutex_unlock(&pctldev->mutex);
 }
-EXPORT_SYMBOL_GPL(pinctrl_gpio_free);
+EXPORT_SYMBOL_GPL(pinctrl_free_gpio);
 
 static int pinctrl_gpio_direction(unsigned gpio, bool input)
 {
@@ -1034,6 +994,7 @@ static struct pinctrl *create_pinctrl(struct device *dev,
 	struct pinctrl *p;
 	const char *devname;
 	struct pinctrl_maps *maps_node;
+	int i;
 	const struct pinctrl_map *map;
 	int ret;
 
@@ -1059,7 +1020,7 @@ static struct pinctrl *create_pinctrl(struct device *dev,
 
 	mutex_lock(&pinctrl_maps_mutex);
 	/* Iterate over the pin control maps to locate the right ones */
-	for_each_pin_map(maps_node, map) {
+	for_each_maps(maps_node, i, map) {
 		/* Map must be for this device */
 		if (strcmp(map->dev_name, devname))
 			continue;
@@ -1227,15 +1188,6 @@ struct pinctrl_state *pinctrl_lookup_state(struct pinctrl *p,
 }
 EXPORT_SYMBOL_GPL(pinctrl_lookup_state);
 
-static void pinctrl_link_add(struct pinctrl_dev *pctldev,
-			     struct device *consumer)
-{
-	if (pctldev->desc->link_consumers)
-		device_link_add(consumer, pctldev->dev,
-				DL_FLAG_PM_RUNTIME |
-				DL_FLAG_AUTOREMOVE_CONSUMER);
-}
-
 /**
  * pinctrl_commit_state() - select/activate/program a pinctrl state to HW
  * @p: the pinctrl handle for the device that requests configuration
@@ -1263,34 +1215,11 @@ static int pinctrl_commit_state(struct pinctrl *p, struct pinctrl_state *state)
 
 	p->state = NULL;
 
-	/* Apply all the settings for the new state - pinmux first */
+	/* Apply all the settings for the new state */
 	list_for_each_entry(setting, &state->settings, node) {
 		switch (setting->type) {
 		case PIN_MAP_TYPE_MUX_GROUP:
 			ret = pinmux_enable_setting(setting);
-			break;
-		case PIN_MAP_TYPE_CONFIGS_PIN:
-		case PIN_MAP_TYPE_CONFIGS_GROUP:
-			ret = 0;
-			break;
-		default:
-			ret = -EINVAL;
-			break;
-		}
-
-		if (ret < 0)
-			goto unapply_new_state;
-
-		/* Do not link hogs (circular dependency) */
-		if (p != setting->pctldev->p)
-			pinctrl_link_add(setting->pctldev, p->dev);
-	}
-
-	/* Apply all the settings for the new state - pinconf after */
-	list_for_each_entry(setting, &state->settings, node) {
-		switch (setting->type) {
-		case PIN_MAP_TYPE_MUX_GROUP:
-			ret = 0;
 			break;
 		case PIN_MAP_TYPE_CONFIGS_PIN:
 		case PIN_MAP_TYPE_CONFIGS_GROUP:
@@ -1304,10 +1233,6 @@ static int pinctrl_commit_state(struct pinctrl *p, struct pinctrl_state *state)
 		if (ret < 0) {
 			goto unapply_new_state;
 		}
-
-		/* Do not link hogs (circular dependency) */
-		if (p != setting->pctldev->p)
-			pinctrl_link_add(setting->pctldev, p->dev);
 	}
 
 	p->state = state;
@@ -1358,7 +1283,7 @@ static void devm_pinctrl_release(struct device *dev, void *res)
 }
 
 /**
- * devm_pinctrl_get() - Resource managed pinctrl_get()
+ * struct devm_pinctrl_get() - Resource managed pinctrl_get()
  * @dev: the device to obtain the handle for
  *
  * If there is a need to explicitly destroy the returned struct pinctrl,
@@ -1406,15 +1331,8 @@ void devm_pinctrl_put(struct pinctrl *p)
 }
 EXPORT_SYMBOL_GPL(devm_pinctrl_put);
 
-/**
- * pinctrl_register_mappings() - register a set of pin controller mappings
- * @maps: the pincontrol mappings table to register. Note the pinctrl-core
- *	keeps a reference to the passed in maps, so they should _not_ be
- *	marked with __initdata.
- * @num_maps: the number of maps in the mapping table
- */
-int pinctrl_register_mappings(const struct pinctrl_map *maps,
-			      unsigned num_maps)
+int pinctrl_register_map(const struct pinctrl_map *maps, unsigned num_maps,
+			 bool dup)
 {
 	int i, ret;
 	struct pinctrl_maps *maps_node;
@@ -1467,8 +1385,17 @@ int pinctrl_register_mappings(const struct pinctrl_map *maps,
 	if (!maps_node)
 		return -ENOMEM;
 
-	maps_node->maps = maps;
 	maps_node->num_maps = num_maps;
+	if (dup) {
+		maps_node->maps = kmemdup(maps, sizeof(*maps) * num_maps,
+					  GFP_KERNEL);
+		if (!maps_node->maps) {
+			kfree(maps_node);
+			return -ENOMEM;
+		}
+	} else {
+		maps_node->maps = maps;
+	}
 
 	mutex_lock(&pinctrl_maps_mutex);
 	list_add_tail(&maps_node->node, &pinctrl_maps);
@@ -1476,14 +1403,21 @@ int pinctrl_register_mappings(const struct pinctrl_map *maps,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pinctrl_register_mappings);
 
 /**
- * pinctrl_unregister_mappings() - unregister a set of pin controller mappings
- * @map: the pincontrol mappings table passed to pinctrl_register_mappings()
- *	when registering the mappings.
+ * pinctrl_register_mappings() - register a set of pin controller mappings
+ * @maps: the pincontrol mappings table to register. This should probably be
+ *	marked with __initdata so it can be discarded after boot. This
+ *	function will perform a shallow copy for the mapping entries.
+ * @num_maps: the number of maps in the mapping table
  */
-void pinctrl_unregister_mappings(const struct pinctrl_map *map)
+int pinctrl_register_mappings(const struct pinctrl_map *maps,
+			      unsigned num_maps)
+{
+	return pinctrl_register_map(maps, num_maps, true);
+}
+
+void pinctrl_unregister_map(const struct pinctrl_map *map)
 {
 	struct pinctrl_maps *maps_node;
 
@@ -1498,7 +1432,6 @@ void pinctrl_unregister_mappings(const struct pinctrl_map *map)
 	}
 	mutex_unlock(&pinctrl_maps_mutex);
 }
-EXPORT_SYMBOL_GPL(pinctrl_unregister_mappings);
 
 /**
  * pinctrl_force_sleep() - turn a given controller device into sleep state
@@ -1556,8 +1489,15 @@ int pinctrl_init_done(struct device *dev)
 	return ret;
 }
 
-static int pinctrl_select_bound_state(struct device *dev,
-				      struct pinctrl_state *state)
+#ifdef CONFIG_PM
+
+/**
+ * pinctrl_pm_select_state() - select pinctrl state for PM
+ * @dev: device to select default state for
+ * @state: state to set
+ */
+static int pinctrl_pm_select_state(struct device *dev,
+				   struct pinctrl_state *state)
 {
 	struct dev_pin_info *pins = dev->pins;
 	int ret;
@@ -1572,27 +1512,15 @@ static int pinctrl_select_bound_state(struct device *dev,
 }
 
 /**
- * pinctrl_select_default_state() - select default pinctrl state
- * @dev: device to select default state for
- */
-int pinctrl_select_default_state(struct device *dev)
-{
-	if (!dev->pins)
-		return 0;
-
-	return pinctrl_select_bound_state(dev, dev->pins->default_state);
-}
-EXPORT_SYMBOL_GPL(pinctrl_select_default_state);
-
-#ifdef CONFIG_PM
-
-/**
  * pinctrl_pm_select_default_state() - select default pinctrl state for PM
  * @dev: device to select default state for
  */
 int pinctrl_pm_select_default_state(struct device *dev)
 {
-	return pinctrl_select_default_state(dev);
+	if (!dev->pins)
+		return 0;
+
+	return pinctrl_pm_select_state(dev, dev->pins->default_state);
 }
 EXPORT_SYMBOL_GPL(pinctrl_pm_select_default_state);
 
@@ -1605,7 +1533,7 @@ int pinctrl_pm_select_sleep_state(struct device *dev)
 	if (!dev->pins)
 		return 0;
 
-	return pinctrl_select_bound_state(dev, dev->pins->sleep_state);
+	return pinctrl_pm_select_state(dev, dev->pins->sleep_state);
 }
 EXPORT_SYMBOL_GPL(pinctrl_pm_select_sleep_state);
 
@@ -1618,7 +1546,7 @@ int pinctrl_pm_select_idle_state(struct device *dev)
 	if (!dev->pins)
 		return 0;
 
-	return pinctrl_select_bound_state(dev, dev->pins->idle_state);
+	return pinctrl_pm_select_state(dev, dev->pins->idle_state);
 }
 EXPORT_SYMBOL_GPL(pinctrl_pm_select_idle_state);
 #endif
@@ -1630,11 +1558,6 @@ static int pinctrl_pins_show(struct seq_file *s, void *what)
 	struct pinctrl_dev *pctldev = s->private;
 	const struct pinctrl_ops *ops = pctldev->desc->pctlops;
 	unsigned i, pin;
-#ifdef CONFIG_GPIOLIB
-	struct pinctrl_gpio_range *range;
-	struct gpio_chip *chip;
-	int gpio_num;
-#endif
 
 	seq_printf(s, "registered pins: %d\n", pctldev->desc->npins);
 
@@ -1652,30 +1575,6 @@ static int pinctrl_pins_show(struct seq_file *s, void *what)
 
 		seq_printf(s, "pin %d (%s) ", pin, desc->name);
 
-#ifdef CONFIG_GPIOLIB
-		gpio_num = -1;
-		list_for_each_entry(range, &pctldev->gpio_ranges, node) {
-			if ((pin >= range->pin_base) &&
-			    (pin < (range->pin_base + range->npins))) {
-				gpio_num = range->base + (pin - range->pin_base);
-				break;
-			}
-		}
-		if (gpio_num >= 0)
-			/*
-			 * FIXME: gpio_num comes from the global GPIO numberspace.
-			 * we need to get rid of the range->base eventually and
-			 * get the descriptor directly from the gpio_chip.
-			 */
-			chip = gpiod_to_chip(gpio_to_desc(gpio_num));
-		else
-			chip = NULL;
-		if (chip)
-			seq_printf(s, "%u:%s ", gpio_num - chip->gpiodev->base, chip->label);
-		else
-			seq_puts(s, "0:? ");
-#endif
-
 		/* Driver-specific info per pin */
 		if (ops->pin_dbg_show)
 			ops->pin_dbg_show(pctldev, s, pin);
@@ -1687,7 +1586,6 @@ static int pinctrl_pins_show(struct seq_file *s, void *what)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(pinctrl_pins);
 
 static int pinctrl_groups_show(struct seq_file *s, void *what)
 {
@@ -1733,12 +1631,11 @@ static int pinctrl_groups_show(struct seq_file *s, void *what)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(pinctrl_groups);
 
 static int pinctrl_gpioranges_show(struct seq_file *s, void *what)
 {
 	struct pinctrl_dev *pctldev = s->private;
-	struct pinctrl_gpio_range *range;
+	struct pinctrl_gpio_range *range = NULL;
 
 	seq_puts(s, "GPIO ranges handled:\n");
 
@@ -1767,7 +1664,6 @@ static int pinctrl_gpioranges_show(struct seq_file *s, void *what)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(pinctrl_gpioranges);
 
 static int pinctrl_devices_show(struct seq_file *s, void *what)
 {
@@ -1794,7 +1690,6 @@ static int pinctrl_devices_show(struct seq_file *s, void *what)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(pinctrl_devices);
 
 static inline const char *map_type(enum pinctrl_map_type type)
 {
@@ -1815,12 +1710,13 @@ static inline const char *map_type(enum pinctrl_map_type type)
 static int pinctrl_maps_show(struct seq_file *s, void *what)
 {
 	struct pinctrl_maps *maps_node;
+	int i;
 	const struct pinctrl_map *map;
 
 	seq_puts(s, "Pinctrl maps:\n");
 
 	mutex_lock(&pinctrl_maps_mutex);
-	for_each_pin_map(maps_node, map) {
+	for_each_maps(maps_node, i, map) {
 		seq_printf(s, "device %s\nstate %s\ntype %s (%d)\n",
 			   map->dev_name, map->name, map_type(map->type),
 			   map->type);
@@ -1847,7 +1743,6 @@ static int pinctrl_maps_show(struct seq_file *s, void *what)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(pinctrl_maps);
 
 static int pinctrl_show(struct seq_file *s, void *what)
 {
@@ -1893,30 +1788,87 @@ static int pinctrl_show(struct seq_file *s, void *what)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(pinctrl);
+
+static int pinctrl_pins_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pinctrl_pins_show, inode->i_private);
+}
+
+static int pinctrl_groups_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pinctrl_groups_show, inode->i_private);
+}
+
+static int pinctrl_gpioranges_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pinctrl_gpioranges_show, inode->i_private);
+}
+
+static int pinctrl_devices_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pinctrl_devices_show, NULL);
+}
+
+static int pinctrl_maps_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pinctrl_maps_show, NULL);
+}
+
+static int pinctrl_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pinctrl_show, NULL);
+}
+
+static const struct file_operations pinctrl_pins_ops = {
+	.open		= pinctrl_pins_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations pinctrl_groups_ops = {
+	.open		= pinctrl_groups_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations pinctrl_gpioranges_ops = {
+	.open		= pinctrl_gpioranges_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations pinctrl_devices_ops = {
+	.open		= pinctrl_devices_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations pinctrl_maps_ops = {
+	.open		= pinctrl_maps_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct file_operations pinctrl_ops = {
+	.open		= pinctrl_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static struct dentry *debugfs_root;
 
 static void pinctrl_init_device_debugfs(struct pinctrl_dev *pctldev)
 {
 	struct dentry *device_root;
-	const char *debugfs_name;
 
-	if (pctldev->desc->name &&
-			strcmp(dev_name(pctldev->dev), pctldev->desc->name)) {
-		debugfs_name = devm_kasprintf(pctldev->dev, GFP_KERNEL,
-				"%s-%s", dev_name(pctldev->dev),
-				pctldev->desc->name);
-		if (!debugfs_name) {
-			pr_warn("failed to determine debugfs dir name for %s\n",
-				dev_name(pctldev->dev));
-			return;
-		}
-	} else {
-		debugfs_name = dev_name(pctldev->dev);
-	}
-
-	device_root = debugfs_create_dir(debugfs_name, debugfs_root);
+	device_root = debugfs_create_dir(dev_name(pctldev->dev),
+					 debugfs_root);
 	pctldev->device_root = device_root;
 
 	if (IS_ERR(device_root) || !device_root) {
@@ -1924,12 +1876,12 @@ static void pinctrl_init_device_debugfs(struct pinctrl_dev *pctldev)
 			dev_name(pctldev->dev));
 		return;
 	}
-	debugfs_create_file("pins", 0444,
-			    device_root, pctldev, &pinctrl_pins_fops);
-	debugfs_create_file("pingroups", 0444,
-			    device_root, pctldev, &pinctrl_groups_fops);
-	debugfs_create_file("gpio-ranges", 0444,
-			    device_root, pctldev, &pinctrl_gpioranges_fops);
+	debugfs_create_file("pins", S_IFREG | S_IRUGO,
+			    device_root, pctldev, &pinctrl_pins_ops);
+	debugfs_create_file("pingroups", S_IFREG | S_IRUGO,
+			    device_root, pctldev, &pinctrl_groups_ops);
+	debugfs_create_file("gpio-ranges", S_IFREG | S_IRUGO,
+			    device_root, pctldev, &pinctrl_gpioranges_ops);
 	if (pctldev->desc->pmxops)
 		pinmux_init_device_debugfs(device_root, pctldev);
 	if (pctldev->desc->confops)
@@ -1950,12 +1902,12 @@ static void pinctrl_init_debugfs(void)
 		return;
 	}
 
-	debugfs_create_file("pinctrl-devices", 0444,
-			    debugfs_root, NULL, &pinctrl_devices_fops);
-	debugfs_create_file("pinctrl-maps", 0444,
-			    debugfs_root, NULL, &pinctrl_maps_fops);
-	debugfs_create_file("pinctrl-handles", 0444,
-			    debugfs_root, NULL, &pinctrl_fops);
+	debugfs_create_file("pinctrl-devices", S_IFREG | S_IRUGO,
+			    debugfs_root, NULL, &pinctrl_devices_ops);
+	debugfs_create_file("pinctrl-maps", S_IFREG | S_IRUGO,
+			    debugfs_root, NULL, &pinctrl_maps_ops);
+	debugfs_create_file("pinctrl-handles", S_IFREG | S_IRUGO,
+			    debugfs_root, NULL, &pinctrl_ops);
 }
 
 #else /* CONFIG_DEBUG_FS */
@@ -2109,8 +2061,6 @@ int pinctrl_enable(struct pinctrl_dev *pctldev)
 	if (error) {
 		dev_err(pctldev->dev, "could not claim hogs: %i\n",
 			error);
-		pinctrl_free_pindescs(pctldev, pctldev->desc->pins,
-				      pctldev->desc->npins);
 		mutex_destroy(&pctldev->mutex);
 		kfree(pctldev);
 
@@ -2153,6 +2103,7 @@ struct pinctrl_dev *pinctrl_register(struct pinctrl_desc *pctldesc,
 		return ERR_PTR(error);
 
 	return pctldev;
+
 }
 EXPORT_SYMBOL_GPL(pinctrl_register);
 
@@ -2284,9 +2235,9 @@ EXPORT_SYMBOL_GPL(devm_pinctrl_register);
  * @dev: parent device for this pin controller
  * @pctldesc: descriptor for this pin controller
  * @driver_data: private pin controller data for this pin controller
- * @pctldev: pin controller device
  *
- * Returns zero on success or an error number on failure.
+ * Returns an error pointer if pincontrol register failed. Otherwise
+ * it returns valid pinctrl handle.
  *
  * The pinctrl device will be automatically released when the device is unbound.
  */
@@ -2317,7 +2268,7 @@ EXPORT_SYMBOL_GPL(devm_pinctrl_register_and_init);
 
 /**
  * devm_pinctrl_unregister() - Resource managed version of pinctrl_unregister().
- * @dev: device for which resource was allocated
+ * @dev: device for which which resource was allocated
  * @pctldev: the pinctrl device to unregister.
  */
 void devm_pinctrl_unregister(struct device *dev, struct pinctrl_dev *pctldev)

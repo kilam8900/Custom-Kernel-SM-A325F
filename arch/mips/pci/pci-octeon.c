@@ -21,6 +21,8 @@
 #include <asm/octeon/cvmx-pci-defs.h>
 #include <asm/octeon/pci-octeon.h>
 
+#include <dma-coherence.h>
+
 #define USE_OCTEON_INTERNAL_ARBITER
 
 /*
@@ -163,6 +165,8 @@ int pcibios_plat_dev_init(struct pci_dev *dev)
 		pci_read_config_dword(dev, pos + PCI_ERR_ROOT_STATUS, &dconfig);
 		pci_write_config_dword(dev, pos + PCI_ERR_ROOT_STATUS, dconfig);
 	}
+
+	dev->dev.dma_ops = octeon_pci_dma_map_ops;
 
 	return 0;
 }
@@ -664,7 +668,7 @@ static int __init octeon_pci_setup(void)
 
 		/* BAR1 movable regions contiguous to cover the swiotlb */
 		octeon_bar1_pci_phys =
-			io_tlb_default_mem.start & ~((1ull << 22) - 1);
+			virt_to_phys(octeon_swiotlb) & ~((1ull << 22) - 1);
 
 		for (index = 0; index < 32; index++) {
 			union cvmx_pci_bar1_indexx bar1_index;

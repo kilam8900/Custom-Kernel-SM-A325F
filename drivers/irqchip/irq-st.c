@@ -1,10 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2014 STMicroelectronics – All Rights Reserved
  *
  *  Author: Lee Jones <lee.jones@linaro.org>
  *
  *  This is a re-write of Christophe Kerello's PMU driver.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <dt-bindings/interrupt-controller/irq-st.h>
@@ -153,13 +156,18 @@ static int st_irq_syscfg_enable(struct platform_device *pdev)
 static int st_irq_syscfg_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
+	const struct of_device_id *match;
 	struct st_irq_syscfg *ddata;
 
 	ddata = devm_kzalloc(&pdev->dev, sizeof(*ddata), GFP_KERNEL);
 	if (!ddata)
 		return -ENOMEM;
 
-	ddata->syscfg = (unsigned int) device_get_match_data(&pdev->dev);
+	match = of_match_device(st_irq_syscfg_match, &pdev->dev);
+	if (!match)
+		return -ENODEV;
+
+	ddata->syscfg = (unsigned int)match->data;
 
 	ddata->regmap = syscon_regmap_lookup_by_phandle(np, "st,syscfg");
 	if (IS_ERR(ddata->regmap)) {

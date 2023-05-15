@@ -1,9 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Regulators driver for Maxim max8649
  *
  * Copyright (C) 2009-2010 Marvell International Ltd.
  *      Haojian Zhuang <haojian.zhuang@marvell.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -145,7 +148,8 @@ static const struct regmap_config max8649_regmap_config = {
 	.val_bits = 8,
 };
 
-static int max8649_regulator_probe(struct i2c_client *client)
+static int max8649_regulator_probe(struct i2c_client *client,
+					     const struct i2c_device_id *id)
 {
 	struct max8649_platform_data *pdata = dev_get_platdata(&client->dev);
 	struct max8649_regulator_info *info = NULL;
@@ -246,7 +250,7 @@ static const struct i2c_device_id max8649_id[] = {
 MODULE_DEVICE_TABLE(i2c, max8649_id);
 
 static struct i2c_driver max8649_driver = {
-	.probe_new	= max8649_regulator_probe,
+	.probe		= max8649_regulator_probe,
 	.driver		= {
 		.name	= "max8649",
 	},

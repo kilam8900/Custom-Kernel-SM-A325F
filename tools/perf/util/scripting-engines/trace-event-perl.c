@@ -27,7 +27,6 @@
 #include <errno.h>
 #include <linux/bitmap.h>
 #include <linux/time64.h>
-#include <traceevent/event-parse.h>
 
 #include <stdbool.h>
 /* perl needs the following define, right after including stdbool.h */
@@ -35,11 +34,9 @@
 #include <EXTERN.h>
 #include <perl.h>
 
+#include "../../perf.h"
 #include "../callchain.h"
-#include "../dso.h"
 #include "../machine.h"
-#include "../map.h"
-#include "../symbol.h"
 #include "../thread.h"
 #include "../event.h"
 #include "../trace-event.h"
@@ -102,7 +99,7 @@ static void define_symbolic_value(const char *ev_name,
 	LEAVE;
 }
 
-static void define_symbolic_values(struct tep_print_flag_sym *field,
+static void define_symbolic_values(struct print_flag_sym *field,
 				   const char *ev_name,
 				   const char *field_name)
 {
@@ -160,7 +157,7 @@ static void define_flag_value(const char *ev_name,
 	LEAVE;
 }
 
-static void define_flag_values(struct tep_print_flag_sym *field,
+static void define_flag_values(struct print_flag_sym *field,
 			       const char *ev_name,
 			       const char *field_name)
 {
@@ -192,62 +189,62 @@ static void define_flag_field(const char *ev_name,
 	LEAVE;
 }
 
-static void define_event_symbols(struct tep_event *event,
+static void define_event_symbols(struct event_format *event,
 				 const char *ev_name,
-				 struct tep_print_arg *args)
+				 struct print_arg *args)
 {
 	if (args == NULL)
 		return;
 
 	switch (args->type) {
-	case TEP_PRINT_NULL:
+	case PRINT_NULL:
 		break;
-	case TEP_PRINT_ATOM:
+	case PRINT_ATOM:
 		define_flag_value(ev_name, cur_field_name, "0",
 				  args->atom.atom);
 		zero_flag_atom = 0;
 		break;
-	case TEP_PRINT_FIELD:
+	case PRINT_FIELD:
 		free(cur_field_name);
 		cur_field_name = strdup(args->field.name);
 		break;
-	case TEP_PRINT_FLAGS:
+	case PRINT_FLAGS:
 		define_event_symbols(event, ev_name, args->flags.field);
 		define_flag_field(ev_name, cur_field_name, args->flags.delim);
 		define_flag_values(args->flags.flags, ev_name, cur_field_name);
 		break;
-	case TEP_PRINT_SYMBOL:
+	case PRINT_SYMBOL:
 		define_event_symbols(event, ev_name, args->symbol.field);
 		define_symbolic_field(ev_name, cur_field_name);
 		define_symbolic_values(args->symbol.symbols, ev_name,
 				       cur_field_name);
 		break;
-	case TEP_PRINT_HEX:
-	case TEP_PRINT_HEX_STR:
+	case PRINT_HEX:
+	case PRINT_HEX_STR:
 		define_event_symbols(event, ev_name, args->hex.field);
 		define_event_symbols(event, ev_name, args->hex.size);
 		break;
-	case TEP_PRINT_INT_ARRAY:
+	case PRINT_INT_ARRAY:
 		define_event_symbols(event, ev_name, args->int_array.field);
 		define_event_symbols(event, ev_name, args->int_array.count);
 		define_event_symbols(event, ev_name, args->int_array.el_size);
 		break;
-	case TEP_PRINT_BSTRING:
-	case TEP_PRINT_DYNAMIC_ARRAY:
-	case TEP_PRINT_DYNAMIC_ARRAY_LEN:
-	case TEP_PRINT_STRING:
-	case TEP_PRINT_BITMASK:
+	case PRINT_BSTRING:
+	case PRINT_DYNAMIC_ARRAY:
+	case PRINT_DYNAMIC_ARRAY_LEN:
+	case PRINT_STRING:
+	case PRINT_BITMASK:
 		break;
-	case TEP_PRINT_TYPE:
+	case PRINT_TYPE:
 		define_event_symbols(event, ev_name, args->typecast.item);
 		break;
-	case TEP_PRINT_OP:
+	case PRINT_OP:
 		if (strcmp(args->op.op, ":") == 0)
 			zero_flag_atom = 1;
 		define_event_symbols(event, ev_name, args->op.left);
 		define_event_symbols(event, ev_name, args->op.right);
 		break;
-	case TEP_PRINT_FUNC:
+	case PRINT_FUNC:
 	default:
 		pr_err("Unsupported print arg type\n");
 		/* we should warn... */
@@ -259,7 +256,7 @@ static void define_event_symbols(struct tep_event *event,
 }
 
 static SV *perl_process_callchain(struct perf_sample *sample,
-				  struct evsel *evsel,
+				  struct perf_evsel *evsel,
 				  struct addr_location *al)
 {
 	AV *list;
@@ -295,17 +292,17 @@ static SV *perl_process_callchain(struct perf_sample *sample,
 			goto exit;
 		}
 
-		if (node->ms.sym) {
+		if (node->sym) {
 			HV *sym = newHV();
 			if (!sym) {
 				hv_undef(elem);
 				goto exit;
 			}
-			if (!hv_stores(sym, "start",   newSVuv(node->ms.sym->start)) ||
-			    !hv_stores(sym, "end",     newSVuv(node->ms.sym->end)) ||
-			    !hv_stores(sym, "binding", newSVuv(node->ms.sym->binding)) ||
-			    !hv_stores(sym, "name",    newSVpvn(node->ms.sym->name,
-								node->ms.sym->namelen)) ||
+			if (!hv_stores(sym, "start",   newSVuv(node->sym->start)) ||
+			    !hv_stores(sym, "end",     newSVuv(node->sym->end)) ||
+			    !hv_stores(sym, "binding", newSVuv(node->sym->binding)) ||
+			    !hv_stores(sym, "name",    newSVpvn(node->sym->name,
+								node->sym->namelen)) ||
 			    !hv_stores(elem, "sym",    newRV_noinc((SV*)sym))) {
 				hv_undef(sym);
 				hv_undef(elem);
@@ -313,8 +310,8 @@ static SV *perl_process_callchain(struct perf_sample *sample,
 			}
 		}
 
-		if (node->ms.map) {
-			struct map *map = node->ms.map;
+		if (node->map) {
+			struct map *map = node->map;
 			const char *dsoname = "[unknown]";
 			if (map && map->dso) {
 				if (symbol_conf.show_kernel_path && map->dso->long_name)
@@ -337,12 +334,12 @@ exit:
 }
 
 static void perl_process_tracepoint(struct perf_sample *sample,
-				    struct evsel *evsel,
+				    struct perf_evsel *evsel,
 				    struct addr_location *al)
 {
 	struct thread *thread = al->thread;
-	struct tep_event *event = evsel->tp_format;
-	struct tep_format_field *field;
+	struct event_format *event = evsel->tp_format;
+	struct format_field *field;
 	static char handler[256];
 	unsigned long long val;
 	unsigned long s, ns;
@@ -354,11 +351,11 @@ static void perl_process_tracepoint(struct perf_sample *sample,
 
 	dSP;
 
-	if (evsel->core.attr.type != PERF_TYPE_TRACEPOINT)
+	if (evsel->attr.type != PERF_TYPE_TRACEPOINT)
 		return;
 
 	if (!event) {
-		pr_debug("ug! no event found for type %" PRIu64, (u64)evsel->core.attr.config);
+		pr_debug("ug! no event found for type %" PRIu64, (u64)evsel->attr.config);
 		return;
 	}
 
@@ -366,11 +363,14 @@ static void perl_process_tracepoint(struct perf_sample *sample,
 
 	sprintf(handler, "%s::%s", event->system, event->name);
 
-	if (!__test_and_set_bit(event->id, events_defined))
+	if (!test_and_set_bit(event->id, events_defined))
 		define_event_symbols(event, handler, event->print_fmt.args);
 
 	s = nsecs / NSEC_PER_SEC;
 	ns = nsecs - s * NSEC_PER_SEC;
+
+	scripting_context->event_data = data;
+	scripting_context->pevent = evsel->tp_format->pevent;
 
 	ENTER;
 	SAVETMPS;
@@ -388,20 +388,18 @@ static void perl_process_tracepoint(struct perf_sample *sample,
 	/* common fields other than pid can be accessed via xsub fns */
 
 	for (field = event->format.fields; field; field = field->next) {
-		if (field->flags & TEP_FIELD_IS_STRING) {
+		if (field->flags & FIELD_IS_STRING) {
 			int offset;
-			if (field->flags & TEP_FIELD_IS_DYNAMIC) {
+			if (field->flags & FIELD_IS_DYNAMIC) {
 				offset = *(int *)(data + field->offset);
 				offset &= 0xffff;
-				if (tep_field_is_relative(field->flags))
-					offset += field->offset + field->size;
 			} else
 				offset = field->offset;
 			XPUSHs(sv_2mortal(newSVpv((char *)data + offset, 0)));
 		} else { /* FIELD_IS_NUMERIC */
 			val = read_size(event, data + field->offset,
 					field->size);
-			if (field->flags & TEP_FIELD_IS_SIGNED) {
+			if (field->flags & FIELD_IS_SIGNED) {
 				XPUSHs(sv_2mortal(newSViv(val)));
 			} else {
 				XPUSHs(sv_2mortal(newSVuv(val)));
@@ -431,7 +429,7 @@ static void perl_process_tracepoint(struct perf_sample *sample,
 
 static void perl_process_event_generic(union perf_event *event,
 				       struct perf_sample *sample,
-				       struct evsel *evsel)
+				       struct perf_evsel *evsel)
 {
 	dSP;
 
@@ -442,7 +440,7 @@ static void perl_process_event_generic(union perf_event *event,
 	SAVETMPS;
 	PUSHMARK(SP);
 	XPUSHs(sv_2mortal(newSVpvn((const char *)event, event->header.size)));
-	XPUSHs(sv_2mortal(newSVpvn((const char *)&evsel->core.attr, sizeof(evsel->core.attr))));
+	XPUSHs(sv_2mortal(newSVpvn((const char *)&evsel->attr, sizeof(evsel->attr))));
 	XPUSHs(sv_2mortal(newSVpvn((const char *)sample, sizeof(*sample))));
 	XPUSHs(sv_2mortal(newSVpvn((const char *)sample->raw_data, sample->raw_size)));
 	PUTBACK;
@@ -455,11 +453,9 @@ static void perl_process_event_generic(union perf_event *event,
 
 static void perl_process_event(union perf_event *event,
 			       struct perf_sample *sample,
-			       struct evsel *evsel,
-			       struct addr_location *al,
-			       struct addr_location *addr_al)
+			       struct perf_evsel *evsel,
+			       struct addr_location *al)
 {
-	scripting_context__update(scripting_context, event, sample, evsel, al, addr_al);
 	perl_process_tracepoint(sample, evsel, al);
 	perl_process_event_generic(event, sample, evsel);
 }
@@ -476,13 +472,10 @@ static void run_start_sub(void)
 /*
  * Start trace script
  */
-static int perl_start_script(const char *script, int argc, const char **argv,
-			     struct perf_session *session)
+static int perl_start_script(const char *script, int argc, const char **argv)
 {
 	const char **command_line;
 	int i, err = 0;
-
-	scripting_context->session = session;
 
 	command_line = malloc((argc + 2) * sizeof(const char *));
 	command_line[0] = "";
@@ -542,13 +535,12 @@ static int perl_stop_script(void)
 	return 0;
 }
 
-static int perl_generate_script(struct tep_handle *pevent, const char *outfile)
+static int perl_generate_script(struct pevent *pevent, const char *outfile)
 {
-	int i, not_first, count, nr_events;
-	struct tep_event **all_events;
-	struct tep_event *event = NULL;
-	struct tep_format_field *f;
+	struct event_format *event = NULL;
+	struct format_field *f;
 	char fname[PATH_MAX];
+	int not_first, count;
 	FILE *ofp;
 
 	sprintf(fname, "%s.pl", outfile);
@@ -609,11 +601,8 @@ sub print_backtrace\n\
 }\n\n\
 ");
 
-	nr_events = tep_get_events_count(pevent);
-	all_events = tep_list_events(pevent, TEP_EVENT_SORT_ID);
 
-	for (i = 0; all_events && i < nr_events; i++) {
-		event = all_events[i];
+	while ((event = trace_find_next_event(pevent, event))) {
 		fprintf(ofp, "sub %s::%s\n{\n", event->system, event->name);
 		fprintf(ofp, "\tmy (");
 
@@ -657,11 +646,11 @@ sub print_backtrace\n\
 			count++;
 
 			fprintf(ofp, "%s=", f->name);
-			if (f->flags & TEP_FIELD_IS_STRING ||
-			    f->flags & TEP_FIELD_IS_FLAG ||
-			    f->flags & TEP_FIELD_IS_SYMBOLIC)
+			if (f->flags & FIELD_IS_STRING ||
+			    f->flags & FIELD_IS_FLAG ||
+			    f->flags & FIELD_IS_SYMBOLIC)
 				fprintf(ofp, "%%s");
-			else if (f->flags & TEP_FIELD_IS_SIGNED)
+			else if (f->flags & FIELD_IS_SIGNED)
 				fprintf(ofp, "%%d");
 			else
 				fprintf(ofp, "%%u");
@@ -679,7 +668,7 @@ sub print_backtrace\n\
 			if (++count % 5 == 0)
 				fprintf(ofp, "\n\t       ");
 
-			if (f->flags & TEP_FIELD_IS_FLAG) {
+			if (f->flags & FIELD_IS_FLAG) {
 				if ((count - 1) % 5 != 0) {
 					fprintf(ofp, "\n\t       ");
 					count = 4;
@@ -689,7 +678,7 @@ sub print_backtrace\n\
 					event->name);
 				fprintf(ofp, "\"%s\", $%s)", f->name,
 					f->name);
-			} else if (f->flags & TEP_FIELD_IS_SYMBOLIC) {
+			} else if (f->flags & FIELD_IS_SYMBOLIC) {
 				if ((count - 1) % 5 != 0) {
 					fprintf(ofp, "\n\t       ");
 					count = 4;
@@ -755,7 +744,6 @@ sub print_backtrace\n\
 
 struct scripting_ops perl_scripting_ops = {
 	.name = "Perl",
-	.dirname = "perl",
 	.start_script = perl_start_script,
 	.flush_script = perl_flush_script,
 	.stop_script = perl_stop_script,

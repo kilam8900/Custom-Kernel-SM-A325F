@@ -1,10 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
+ * linux/kernel/irq/handle.c
+ *
  * Copyright (C) 1992, 1998-2006 Linus Torvalds, Ingo Molnar
  * Copyright (C) 2005-2006, Thomas Gleixner, Russell King
  *
- * This file contains the core interrupt handling code. Detailed
- * information is available in Documentation/core-api/genericirq.rst
+ * This file contains the core interrupt handling code.
+ *
+ * Detailed information is available in Documentation/core-api/genericirq.rst
  *
  */
 
@@ -14,14 +16,12 @@
 #include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
 
-#include <asm/irq_regs.h>
-
 #include <trace/events/irq.h>
 
 #include "internals.h"
 
-#ifdef CONFIG_GENERIC_IRQ_MULTI_HANDLER
-void (*handle_arch_irq)(struct pt_regs *) __ro_after_init;
+#ifdef CONFIG_MTK_RT_THROTTLE_MON
+#include "mtk_rt_mon.h"
 #endif
 
 /**
@@ -136,29 +136,43 @@ void __irq_wake_thread(struct irq_desc *desc, struct irqaction *action)
 	wake_up_process(action->thread);
 }
 
-irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc)
+#ifdef CONFIG_MTK_RT_THROTTLE_MON
+static void save_isr_info(unsigned long long start, unsigned long long end)
+{
+	unsigned long long dur = end - start;
+
+	if ((current->policy == SCHED_FIFO || current->policy == SCHED_RR)
+		&& mt_rt_mon_enable(smp_processor_id()))
+		current->se.mtk_isr_time += dur;
+}
+#endif
+
+irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc, unsigned int *flags)
 {
 	irqreturn_t retval = IRQ_NONE;
 	unsigned int irq = desc->irq_data.irq;
 	struct irqaction *action;
+#ifdef CONFIG_MTK_RT_THROTTLE_MON
+	unsigned long long t1, t2;
+#endif
 
 	record_irq_time(desc);
 
 	for_each_action_of_desc(desc, action) {
 		irqreturn_t res;
 
-		/*
-		 * If this IRQ would be threaded under force_irqthreads, mark it so.
-		 */
-		if (irq_settings_can_thread(desc) &&
-		    !(action->flags & (IRQF_NO_THREAD | IRQF_PERCPU | IRQF_ONESHOT)))
-			lockdep_hardirq_threaded();
-
 		trace_irq_handler_entry(irq, action);
+#ifdef CONFIG_MTK_RT_THROTTLE_MON
+		t1 = sched_clock();
+#endif
 		res = action->handler(irq, action->dev_id);
+#ifdef CONFIG_MTK_RT_THROTTLE_MON
+		t2 = sched_clock();
+		save_isr_info(t1, t2);
+#endif
 		trace_irq_handler_exit(irq, action, res);
 
-		if (WARN_ONCE(!irqs_disabled(),"irq %u handler %pS enabled interrupts\n",
+		if (WARN_ONCE(!irqs_disabled(),"irq %u handler %pF enabled interrupts\n",
 			      irq, action->handler))
 			local_irq_disable();
 
@@ -174,6 +188,10 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc)
 			}
 
 			__irq_wake_thread(desc, action);
+
+			/* Fall through to add to randomness */
+		case IRQ_HANDLED:
+			*flags |= action->flags;
 			break;
 
 		default:
@@ -189,12 +207,13 @@ irqreturn_t __handle_irq_event_percpu(struct irq_desc *desc)
 irqreturn_t handle_irq_event_percpu(struct irq_desc *desc)
 {
 	irqreturn_t retval;
+	unsigned int flags = 0;
 
-	retval = __handle_irq_event_percpu(desc);
+	retval = __handle_irq_event_percpu(desc, &flags);
 
-	add_interrupt_randomness(desc->irq_data.irq);
+	add_interrupt_randomness(desc->irq_data.irq, flags);
 
-	if (!irq_settings_no_debug(desc))
+	if (!noirqdebug)
 		note_interrupt(desc, retval);
 	return retval;
 }
@@ -213,30 +232,3 @@ irqreturn_t handle_irq_event(struct irq_desc *desc)
 	irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
 	return ret;
 }
-
-#ifdef CONFIG_GENERIC_IRQ_MULTI_HANDLER
-int __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
-{
-	if (handle_arch_irq)
-		return -EBUSY;
-
-	handle_arch_irq = handle_irq;
-	return 0;
-}
-
-/**
- * generic_handle_arch_irq - root irq handler for architectures which do no
- *                           entry accounting themselves
- * @regs:	Register file coming from the low-level handling code
- */
-asmlinkage void noinstr generic_handle_arch_irq(struct pt_regs *regs)
-{
-	struct pt_regs *old_regs;
-
-	irq_enter();
-	old_regs = set_irq_regs(regs);
-	handle_arch_irq(regs);
-	set_irq_regs(old_regs);
-	irq_exit();
-}
-#endif

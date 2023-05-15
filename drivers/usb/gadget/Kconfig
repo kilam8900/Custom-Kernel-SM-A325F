@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # USB Gadget support on a system involves
 #    (a) a peripheral controller, and
@@ -19,8 +18,8 @@ menuconfig USB_GADGET
 	select USB_COMMON
 	select NLS
 	help
-	   USB is a host/device protocol, organized with one host (such as a
-	   PC) controlling up to 127 peripheral devices.
+	   USB is a master/slave protocol, organized with one master
+	   host (such as a PC) controlling up to 127 peripheral devices.
 	   The USB hardware is asymmetric, which makes it easier to set up:
 	   you can't connect a "to-the-host" connector to a peripheral.
 
@@ -203,7 +202,6 @@ config USB_F_UAC2
 
 config USB_F_UVC
 	tristate
-	select UVC_COMMON
 
 config USB_F_MIDI
 	tristate
@@ -215,6 +213,18 @@ config USB_F_PRINTER
 	tristate
 
 config USB_F_TCM
+	tristate
+
+config USB_F_AUDIO_SRC
+	tristate
+
+config USB_F_ACC
+	tristate
+
+config USB_F_CONN_GADGET
+	tristate
+
+config USB_F_SS_MON_GADGET
 	tristate
 
 # this first set of drivers all depend on bulk-capable hardware.
@@ -229,7 +239,7 @@ config USB_CONFIGFS
 	  specified simply by creating appropriate directories in configfs.
 	  Associating functions with configurations is done by creating
 	  appropriate symbolic links.
-	  For more information see Documentation/usb/gadget_configfs.rst.
+	  For more information see Documentation/usb/gadget_configfs.txt.
 
 config USB_CONFIGFS_SERIAL
 	bool "Generic serial bulk in/out"
@@ -266,7 +276,6 @@ config USB_CONFIGFS_NCM
 	depends on NET
 	select USB_U_ETHER
 	select USB_F_NCM
-	select CRC32
 	help
 	  NCM is an advanced protocol for Ethernet encapsulation, allows
 	  grouping of several ethernet frames into one USB transfer and
@@ -316,7 +325,6 @@ config USB_CONFIGFS_EEM
 	depends on NET
 	select USB_U_ETHER
 	select USB_F_EEM
-	select CRC32
 	help
 	  CDC EEM is a newer USB standard that is somewhat simpler than CDC ECM
 	  and therefore can be supported by more hardware.  Technically ECM and
@@ -371,6 +379,53 @@ config USB_CONFIGFS_F_FS
 	  of composite gadgets such that some of the functions are
 	  implemented in kernel space (for instance Ethernet, serial or
 	  mass storage) and other are implemented in user space.
+
+config USB_CONFIGFS_F_DM
+        bool "DM gadget"
+        depends on USB_CONFIGFS
+        select USB_F_DM
+        help
+          USB gadget DM(Diagnosis Monitor) support
+
+config USB_CONFIGFS_F_CONN_GADGET
+	bool "Conn gadget function"
+	depends on USB_CONFIGFS
+	select USB_F_CONN_GADGET
+	help
+	  USB Sidesync function support
+
+config USB_CONFIGFS_F_SS_MON_GADGET
+	bool "F_SAMSUNG gadget"
+	depends on USB_CONFIGFS
+	select USB_F_SS_MON_GADGET
+	help
+	 Driver for control to Samsung Usb device layer
+	 For Samung working scenario and saving debug log, etc
+
+config USB_CONFIGFS_F_ACC
+	boolean "Accessory gadget"
+	depends on USB_CONFIGFS
+	depends on HID=y
+	select USB_F_ACC
+	help
+	  USB gadget Accessory support
+
+config USB_CONFIGFS_F_AUDIO_SRC
+	boolean "Audio Source gadget"
+	depends on USB_CONFIGFS && USB_CONFIGFS_F_ACC
+	depends on SND
+	select SND_PCM
+	select USB_F_AUDIO_SRC
+	help
+	  USB gadget Audio Source support
+
+config USB_CONFIGFS_UEVENT
+	boolean "Uevent notification of Gadget state"
+	depends on USB_CONFIGFS
+	help
+	  Enable uevent notifications to userspace when the gadget
+	  state changes. The gadget can be in any of the following
+	  three states: "CONNECTED/DISCONNECTED/CONFIGURED"
 
 config USB_CONFIGFS_F_UAC1
 	bool "Audio Class 1.0"
@@ -444,14 +499,13 @@ config USB_CONFIGFS_F_HID
 	  The HID function driver provides generic emulation of USB
 	  Human Interface Devices (HID).
 
-	  For more information, see Documentation/usb/gadget_hid.rst.
+	  For more information, see Documentation/usb/gadget_hid.txt.
 
 config USB_CONFIGFS_F_UVC
 	bool "USB Webcam function"
 	depends on USB_CONFIGFS
+	depends on VIDEO_V4L2
 	depends on VIDEO_DEV
-	depends on VIDEO_DEV
-	select VIDEOBUF2_DMA_SG
 	select VIDEOBUF2_VMALLOC
 	select USB_F_UVC
 	help
@@ -470,7 +524,7 @@ config USB_CONFIGFS_F_PRINTER
 	  receive or send printer data. It can use ioctl calls to
 	  the device file to get or set printer status.
 
-	  For more information, see Documentation/usb/gadget_printer.rst
+	  For more information, see Documentation/usb/gadget_printer.txt
 	  which includes sample code for accessing the device file.
 
 config USB_CONFIGFS_F_TCM
@@ -486,6 +540,14 @@ config USB_CONFIGFS_F_TCM
 	  interface 0 (primary) and UAS is on alternative interface 1.
 	  Both protocols can work on USB2.0 and USB3.0.
 	  UAS utilizes the USB 3.0 feature called streams support.
+
+config USB_ANDROID_SAMSUNG_COMPOSITE
+	bool "Samsung Composite function"
+	default n
+	help
+	  Provides SAMSUNG composite driver.
+	  Multi Configuration.
+	  If you enable this option, android composite will be changed.
 
 source "drivers/usb/gadget/legacy/Kconfig"
 

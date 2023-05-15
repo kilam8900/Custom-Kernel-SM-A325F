@@ -386,6 +386,7 @@ static int orangefs_dir_release(struct inode *inode, struct file *file)
 {
 	struct orangefs_dir *od = file->private_data;
 	struct orangefs_dir_part *part = od->part;
+	orangefs_flush_inode(inode);
 	while (part) {
 		struct orangefs_dir_part *next = part->next;
 		vfree(part);
@@ -398,7 +399,7 @@ static int orangefs_dir_release(struct inode *inode, struct file *file)
 const struct file_operations orangefs_dir_operations = {
 	.llseek = orangefs_dir_llseek,
 	.read = generic_read_dir,
-	.iterate_shared = orangefs_dir_iterate,
+	.iterate = orangefs_dir_iterate,
 	.open = orangefs_dir_open,
 	.release = orangefs_dir_release
 };

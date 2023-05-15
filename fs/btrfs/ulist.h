@@ -1,11 +1,12 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (C) 2011 STRATO AG
  * written by Arne Jansen <sensille@gmx.net>
+ * Distributed under the GNU GPL license version 2.
+ *
  */
 
-#ifndef BTRFS_ULIST_H
-#define BTRFS_ULIST_H
+#ifndef __ULIST__
+#define __ULIST__
 
 #include <linux/list.h>
 #include <linux/rbtree.h>
@@ -66,7 +67,7 @@ static inline int ulist_add_merge_ptr(struct ulist *ulist, u64 val, void *aux,
 #endif
 }
 
-struct ulist_node *ulist_next(const struct ulist *ulist,
+struct ulist_node *ulist_next(struct ulist *ulist,
 			      struct ulist_iterator *uiter);
 
 #define ULIST_ITER_INIT(uiter) ((uiter)->cur_list = NULL)

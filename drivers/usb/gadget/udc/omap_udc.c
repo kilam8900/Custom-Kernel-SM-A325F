@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * omap_udc.c -- for OMAP full speed udc; most chips support OTG.
  *
@@ -6,6 +5,11 @@
  * Copyright (C) 2004-2005 David Brownell
  *
  * OMAP2 & DMA support by Kyungmin Park <kyungmin.park@samsung.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #undef	DEBUG
@@ -40,11 +44,8 @@
 #include <asm/mach-types.h>
 
 #include <linux/omap-dma.h>
-#include <linux/platform_data/usb-omap1.h>
 
-#include <linux/soc/ti/omap1-usb.h>
-#include <linux/soc/ti/omap1-soc.h>
-#include <linux/soc/ti/omap1-io.h>
+#include <mach/usb.h>
 
 #include "omap_udc.h"
 
@@ -1006,7 +1007,7 @@ irq_wait:
 static int omap_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 {
 	struct omap_ep	*ep = container_of(_ep, struct omap_ep, ep);
-	struct omap_req	*req = NULL, *iter;
+	struct omap_req	*req;
 	unsigned long	flags;
 
 	if (!_ep || !_req)
@@ -1015,13 +1016,11 @@ static int omap_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	spin_lock_irqsave(&ep->udc->lock, flags);
 
 	/* make sure it's actually queued on this endpoint */
-	list_for_each_entry(iter, &ep->queue, queue) {
-		if (&iter->req != _req)
-			continue;
-		req = iter;
-		break;
+	list_for_each_entry(req, &ep->queue, queue) {
+		if (&req->req == _req)
+			break;
 	}
-	if (!req) {
+	if (&req->req != _req) {
 		spin_unlock_irqrestore(&ep->udc->lock, flags);
 		return -EINVAL;
 	}
@@ -1470,7 +1469,7 @@ static void ep0_irq(struct omap_udc *udc, u16 irq_src)
 			if (!udc->ep0_in) {
 				stat = 0;
 				/* read next OUT packet of request, maybe
-				 * reactivating the fifo; stall on errors.
+				 * reactiviting the fifo; stall on errors.
 				 */
 				stat = read_fifo(ep0, req);
 				if (!req || stat < 0) {
@@ -1859,9 +1858,9 @@ static irqreturn_t omap_udc_irq(int irq, void *_udc)
 #define PIO_OUT_TIMEOUT	(jiffies + HZ/3)
 #define HALF_FULL(f)	(!((f)&(UDC_NON_ISO_FIFO_FULL|UDC_NON_ISO_FIFO_EMPTY)))
 
-static void pio_out_timer(struct timer_list *t)
+static void pio_out_timer(unsigned long _ep)
 {
-	struct omap_ep	*ep = from_timer(ep, t, timer);
+	struct omap_ep	*ep = (void *) _ep;
 	unsigned long	flags;
 	u16		stat_flg;
 
@@ -2036,7 +2035,12 @@ static irqreturn_t omap_udc_iso_irq(int irq, void *_dev)
 
 static inline int machine_without_vbus_sense(void)
 {
-	return  machine_is_omap_osk() || machine_is_sx1();
+	return machine_is_omap_innovator()
+		|| machine_is_omap_osk()
+		|| machine_is_omap_palmte()
+		|| machine_is_sx1()
+		/* No known omap7xx boards with vbus sense */
+		|| cpu_is_omap7xx();
 }
 
 static int omap_udc_start(struct usb_gadget *g,
@@ -2061,6 +2065,7 @@ static int omap_udc_start(struct usb_gadget *g,
 	udc->softconnect = 1;
 
 	/* hook up the driver */
+	driver->driver.bus = NULL;
 	udc->driver = driver;
 	spin_unlock_irqrestore(&udc->lock, flags);
 
@@ -2102,6 +2107,7 @@ done:
 static int omap_udc_stop(struct usb_gadget *g)
 {
 	unsigned long	flags;
+	int		status = -ENODEV;
 
 	if (udc->dc_clk != NULL)
 		omap_udc_enable_clock(1);
@@ -2123,7 +2129,7 @@ static int omap_udc_stop(struct usb_gadget *g)
 	if (udc->dc_clk != NULL)
 		omap_udc_enable_clock(0);
 
-	return 0;
+	return status;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -2228,7 +2234,7 @@ static int proc_otg_show(struct seq_file *s)
 	char		*ctrl_name = "(UNKNOWN)";
 
 	tmp = omap_readl(OTG_REV);
-	ctrl_name = "transceiver_ctrl";
+	ctrl_name = "tranceiver_ctrl";
 	trans = omap_readw(USB_TRANSCEIVER_CTRL);
 	seq_printf(s, "\nOTG rev %d.%d, %s %05x\n",
 		tmp >> 4, tmp & 0xf, ctrl_name, trans);
@@ -2432,9 +2438,22 @@ static int proc_udc_show(struct seq_file *s, void *_)
 	return 0;
 }
 
+static int proc_udc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_udc_show, NULL);
+}
+
+static const struct file_operations proc_ops = {
+	.owner		= THIS_MODULE,
+	.open		= proc_udc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static void create_proc_file(void)
 {
-	proc_create_single(proc_filename, 0, NULL, proc_udc_show);
+	proc_create(proc_filename, 0, NULL, &proc_ops);
 }
 
 static void remove_proc_file(void)
@@ -2529,7 +2548,9 @@ omap_ep_setup(char *name, u8 addr, u8 type,
 		}
 		if (dbuf && addr)
 			epn_rxtx |= UDC_EPN_RX_DB;
-		timer_setup(&ep->timer, pio_out_timer, 0);
+		init_timer(&ep->timer);
+		ep->timer.function = pio_out_timer;
+		ep->timer.data = (unsigned long) ep;
 	}
 	if (addr)
 		epn_rxtx |= UDC_EPN_RX_VALID;
@@ -2552,7 +2573,7 @@ omap_ep_setup(char *name, u8 addr, u8 type,
 
 	/* set up driver data structures */
 	BUG_ON(strlen(name) >= sizeof ep->name);
-	strscpy(ep->name, name, sizeof(ep->name));
+	strlcpy(ep->name, name, sizeof ep->name);
 	INIT_LIST_HEAD(&ep->queue);
 	INIT_LIST_HEAD(&ep->iso);
 	ep->bEndpointAddress = addr;
@@ -2575,7 +2596,7 @@ omap_ep_setup(char *name, u8 addr, u8 type,
 	case USB_ENDPOINT_XFER_INT:
 		ep->ep.caps.type_int = true;
 		break;
-	}
+	};
 
 	if (addr & USB_DIR_IN)
 		ep->ep.caps.dir_in = true;
@@ -2603,8 +2624,6 @@ static void omap_udc_release(struct device *dev)
 	if (udc->dc_clk) {
 		if (udc->clk_requested)
 			omap_udc_enable_clock(0);
-		clk_unprepare(udc->hhc_clk);
-		clk_unprepare(udc->dc_clk);
 		clk_put(udc->hhc_clk);
 		clk_put(udc->dc_clk);
 	}
@@ -2753,9 +2772,12 @@ static int omap_udc_probe(struct platform_device *pdev)
 	struct clk		*dc_clk = NULL;
 	struct clk		*hhc_clk = NULL;
 
+	if (cpu_is_omap7xx())
+		use_dma = 0;
+
 	/* NOTE:  "knows" the order of the resources! */
 	if (!request_mem_region(pdev->resource[0].start,
-			resource_size(&pdev->resource[0]),
+			pdev->resource[0].end - pdev->resource[0].start + 1,
 			driver_name)) {
 		DBG("request_mem_region failed\n");
 		return -EBUSY;
@@ -2766,8 +2788,18 @@ static int omap_udc_probe(struct platform_device *pdev)
 		hhc_clk = clk_get(&pdev->dev, "usb_hhc_ck");
 		BUG_ON(IS_ERR(dc_clk) || IS_ERR(hhc_clk));
 		/* can't use omap_udc_enable_clock yet */
-		clk_prepare_enable(dc_clk);
-		clk_prepare_enable(hhc_clk);
+		clk_enable(dc_clk);
+		clk_enable(hhc_clk);
+		udelay(100);
+	}
+
+	if (cpu_is_omap7xx()) {
+		dc_clk = clk_get(&pdev->dev, "usb_dc_ck");
+		hhc_clk = clk_get(&pdev->dev, "l3_ocpi_ck");
+		BUG_ON(IS_ERR(dc_clk) || IS_ERR(hhc_clk));
+		/* can't use omap_udc_enable_clock yet */
+		clk_enable(dc_clk);
+		clk_enable(hhc_clk);
 		udelay(100);
 	}
 
@@ -2819,7 +2851,7 @@ static int omap_udc_probe(struct platform_device *pdev)
 				type = "integrated";
 				break;
 			}
-			fallthrough;
+			/* FALL THROUGH */
 		case 3:
 		case 11:
 		case 16:
@@ -2836,7 +2868,7 @@ static int omap_udc_probe(struct platform_device *pdev)
 		case 14:			/* transceiverless */
 			if (cpu_is_omap1710())
 				goto bad_on_1710;
-			fallthrough;
+			/* FALL THROUGH */
 		case 13:
 		case 15:
 			type = "no";
@@ -2895,7 +2927,7 @@ bad_on_1710:
 		goto cleanup1;
 	}
 #endif
-	if (cpu_is_omap16xx()) {
+	if (cpu_is_omap16xx() || cpu_is_omap7xx()) {
 		udc->dc_clk = dc_clk;
 		udc->hhc_clk = hhc_clk;
 		clk_disable(hhc_clk);
@@ -2914,15 +2946,15 @@ cleanup0:
 	if (!IS_ERR_OR_NULL(xceiv))
 		usb_put_phy(xceiv);
 
-	if (cpu_is_omap16xx()) {
-		clk_disable_unprepare(hhc_clk);
-		clk_disable_unprepare(dc_clk);
+	if (cpu_is_omap16xx() || cpu_is_omap7xx()) {
+		clk_disable(hhc_clk);
+		clk_disable(dc_clk);
 		clk_put(hhc_clk);
 		clk_put(dc_clk);
 	}
 
 	release_mem_region(pdev->resource[0].start,
-			   resource_size(&pdev->resource[0]));
+			pdev->resource[0].end - pdev->resource[0].start + 1);
 
 	return status;
 }
@@ -2938,7 +2970,7 @@ static int omap_udc_remove(struct platform_device *pdev)
 	wait_for_completion(&done);
 
 	release_mem_region(pdev->resource[0].start,
-			   resource_size(&pdev->resource[0]));
+			pdev->resource[0].end - pdev->resource[0].start + 1);
 
 	return 0;
 }
@@ -2989,7 +3021,7 @@ static struct platform_driver udc_driver = {
 	.suspend	= omap_udc_suspend,
 	.resume		= omap_udc_resume,
 	.driver		= {
-		.name	= driver_name,
+		.name	= (char *) driver_name,
 	},
 };
 

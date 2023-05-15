@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  linux/drivers/spi/spi-loopback-test.c
  *
@@ -7,6 +6,16 @@
  *  Loopback test driver to test several typical spi_message conditions
  *  that a spi_master driver may encounter
  *  this can also get used for regression testing
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
  */
 
 #include <linux/delay.h>
@@ -71,11 +80,6 @@ module_param(check_ranges, int, 0644);
 MODULE_PARM_DESC(check_ranges,
 		 "checks rx_buffer pattern are valid");
 
-static unsigned int delay_ms = 100;
-module_param(delay_ms, uint, 0644);
-MODULE_PARM_DESC(delay_ms,
-		 "delay between tests, in milliseconds (default: 100)");
-
 /* the actual tests to execute */
 static struct spi_test spi_tests[] = {
 	{
@@ -95,7 +99,7 @@ static struct spi_test spi_tests[] = {
 	{
 		.description	= "tx/rx-transfer - crossing PAGE_SIZE",
 		.fill_option	= FILL_COUNT_8,
-		.iterate_len    = { ITERATE_LEN },
+		.iterate_len    = { ITERATE_MAX_LEN },
 		.iterate_tx_align = ITERATE_ALIGN,
 		.iterate_rx_align = ITERATE_ALIGN,
 		.transfer_count = 1,
@@ -303,45 +307,12 @@ static struct spi_test spi_tests[] = {
 			{
 				.tx_buf = TX(0),
 				.rx_buf = RX(0),
-				.delay = {
-					.value = 1000,
-					.unit = SPI_DELAY_UNIT_USECS,
-				},
+				.delay_usecs = 1000,
 			},
 			{
 				.tx_buf = TX(0),
 				.rx_buf = RX(0),
-				.delay = {
-					.value = 1000,
-					.unit = SPI_DELAY_UNIT_USECS,
-				},
-			},
-		},
-	},
-	{
-		.description	= "three tx+rx transfers with overlapping cache lines",
-		.fill_option	= FILL_COUNT_8,
-		/*
-		 * This should be large enough for the controller driver to
-		 * choose to transfer it with DMA.
-		 */
-		.iterate_len    = { 512, -1 },
-		.iterate_transfer_mask = BIT(1),
-		.transfer_count = 3,
-		.transfers		= {
-			{
-				.len = 1,
-				.tx_buf = TX(0),
-				.rx_buf = RX(0),
-			},
-			{
-				.tx_buf = TX(1),
-				.rx_buf = RX(1),
-			},
-			{
-				.len = 1,
-				.tx_buf = TX(513),
-				.rx_buf = RX(513),
+				.delay_usecs = 1000,
 			},
 		},
 	},
@@ -486,8 +457,7 @@ struct rx_ranges {
 	u8 *end;
 };
 
-static int rx_ranges_cmp(void *priv, const struct list_head *a,
-			 const struct list_head *b)
+static int rx_ranges_cmp(void *priv, struct list_head *a, struct list_head *b)
 {
 	struct rx_ranges *rx_a = list_entry(a, struct rx_ranges, list);
 	struct rx_ranges *rx_b = list_entry(b, struct rx_ranges, list);
@@ -576,7 +546,7 @@ static int spi_test_check_elapsed_time(struct spi_device *spi,
 		unsigned long long nbits = (unsigned long long)BITS_PER_BYTE *
 					   xfer->len;
 
-		delay_usecs += xfer->delay.value;
+		delay_usecs += xfer->delay_usecs;
 		if (!xfer->speed_hz)
 			continue;
 		estimated_time += div_u64(nbits * NSEC_PER_SEC, xfer->speed_hz);
@@ -907,7 +877,7 @@ static int spi_test_run_iter(struct spi_device *spi,
 		test.transfers[i].len = len;
 		if (test.transfers[i].tx_buf)
 			test.transfers[i].tx_buf += tx_off;
-		if (test.transfers[i].rx_buf)
+		if (test.transfers[i].tx_buf)
 			test.transfers[i].rx_buf += rx_off;
 	}
 
@@ -918,10 +888,10 @@ static int spi_test_run_iter(struct spi_device *spi,
 /**
  * spi_test_execute_msg - default implementation to run a test
  *
- * @spi: @spi_device on which to run the @spi_message
- * @test: the test to execute, which already contains @msg
- * @tx:   the tx buffer allocated for the test sequence
- * @rx:   the rx buffer allocated for the test sequence
+ * spi: @spi_device on which to run the @spi_message
+ * test: the test to execute, which already contains @msg
+ * tx:   the tx buffer allocated for the test sequence
+ * rx:   the rx buffer allocated for the test sequence
  *
  * Returns: error code of spi_sync as well as basic error checking
  */
@@ -990,10 +960,10 @@ EXPORT_SYMBOL_GPL(spi_test_execute_msg);
  *                     including all the relevant iterations on:
  *                     length and buffer alignment
  *
- * @spi:  the spi_device to send the messages to
- * @test: the test which we need to execute
- * @tx:   the tx buffer allocated for the test sequence
- * @rx:   the rx buffer allocated for the test sequence
+ * spi:  the spi_device to send the messages to
+ * test: the test which we need to execute
+ * tx:   the tx buffer allocated for the test sequence
+ * rx:   the rx buffer allocated for the test sequence
  *
  * Returns: status code of spi_sync or other failures
  */
@@ -1103,8 +1073,7 @@ int spi_test_run_tests(struct spi_device *spi,
 		 * detect the individual tests when using a logic analyzer
 		 * we also add scheduling to avoid potential spi_timeouts...
 		 */
-		if (delay_ms)
-			mdelay(delay_ms);
+		mdelay(100);
 		schedule();
 	}
 

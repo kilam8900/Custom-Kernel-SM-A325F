@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *    Initial setup-routines for HP 9000 based hardware.
  *
@@ -10,6 +9,21 @@
  *    Modifications copyright 2001 Ryan Bradetich <rbradetich@uswest.net>
  *
  *    Initial PA-RISC Version: 04-23-1999 by Helge Deller
+ *
+ *    This program is free software; you can redistribute it and/or modify
+ *    it under the terms of the GNU General Public License as published by
+ *    the Free Software Foundation; either version 2, or (at your option)
+ *    any later version.
+ *
+ *    This program is distributed in the hope that it will be useful,
+ *    but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *    GNU General Public License for more details.
+ *
+ *    You should have received a copy of the GNU General Public License
+ *    along with this program; if not, write to the Free Software
+ *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
  */
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -19,7 +33,6 @@
 #include <linux/random.h>
 #include <linux/slab.h>
 #include <linux/cpu.h>
-#include <asm/topology.h>
 #include <asm/param.h>
 #include <asm/cache.h>
 #include <asm/hardware.h>	/* for register_parisc_driver() stuff */
@@ -30,10 +43,10 @@
 #include <asm/irq.h>		/* for struct irq_region */
 #include <asm/parisc-device.h>
 
-struct system_cpuinfo_parisc boot_cpu_data __ro_after_init;
+struct system_cpuinfo_parisc boot_cpu_data __read_mostly;
 EXPORT_SYMBOL(boot_cpu_data);
 #ifdef CONFIG_PA8X00
-int _parisc_requires_coherency __ro_after_init;
+int _parisc_requires_coherency __read_mostly;
 EXPORT_SYMBOL(_parisc_requires_coherency);
 #endif
 
@@ -164,16 +177,13 @@ static int __init processor_probe(struct parisc_device *dev)
 	if (cpuid)
 		memset(p, 0, sizeof(struct cpuinfo_parisc));
 
+	p->loops_per_jiffy = loops_per_jiffy;
 	p->dev = dev;		/* Save IODC data in case we need it */
 	p->hpa = dev->hpa.start;	/* save CPU hpa */
 	p->cpuid = cpuid;	/* save CPU id */
 	p->txn_addr = txn_addr;	/* save CPU IRQ address */
 	p->cpu_num = cpu_info.cpu_num;
 	p->cpu_loc = cpu_info.cpu_loc;
-
-	set_cpu_possible(cpuid, true);
-	store_cpu_topology(cpuid);
-
 #ifdef CONFIG_SMP
 	/*
 	** FIXME: review if any other initialization is clobbered
@@ -213,7 +223,7 @@ static int __init processor_probe(struct parisc_device *dev)
 #ifdef CONFIG_SMP
 	if (cpuid) {
 		set_cpu_present(cpuid, true);
-		add_cpu(cpuid);
+		cpu_up(cpuid);
 	}
 #endif
 
@@ -229,7 +239,6 @@ static int __init processor_probe(struct parisc_device *dev)
 void __init collect_boot_cpu_data(void)
 {
 	unsigned long cr16_seed;
-	char orig_prod_num[64], current_prod_num[64], serial_no[64];
 
 	memset(&boot_cpu_data, 0, sizeof(boot_cpu_data));
 
@@ -272,16 +281,9 @@ void __init collect_boot_cpu_data(void)
 		printk(KERN_INFO "capabilities 0x%lx\n",
 			boot_cpu_data.pdc.capabilities);
 
-	if (pdc_model_sysmodel(OS_ID_HPUX, boot_cpu_data.pdc.sys_model_name) == PDC_OK)
-		pr_info("HP-UX model name: %s\n",
+	if (pdc_model_sysmodel(boot_cpu_data.pdc.sys_model_name) == PDC_OK)
+		printk(KERN_INFO "model %s\n",
 			boot_cpu_data.pdc.sys_model_name);
-
-	serial_no[0] = 0;
-	if (pdc_model_sysmodel(OS_ID_MPEXL, serial_no) == PDC_OK &&
-		serial_no[0])
-		pr_info("MPE/iX model name: %s\n", serial_no);
-
-	dump_stack_set_arch_desc("%s", boot_cpu_data.pdc.sys_model_name);
 
 	boot_cpu_data.hversion =  boot_cpu_data.pdc.model.hversion;
 	boot_cpu_data.sversion =  boot_cpu_data.pdc.model.sversion;
@@ -294,15 +296,6 @@ void __init collect_boot_cpu_data(void)
 	_parisc_requires_coherency = (boot_cpu_data.cpu_type == mako) ||
 				(boot_cpu_data.cpu_type == mako2);
 #endif
-
-	if (pdc_model_platform_info(orig_prod_num, current_prod_num, serial_no) == PDC_OK) {
-		printk(KERN_INFO "product %s, original product %s, S/N: %s\n",
-			current_prod_num[0] ? current_prod_num : "n/a",
-			orig_prod_num, serial_no);
-		add_device_randomness(orig_prod_num, strlen(orig_prod_num));
-		add_device_randomness(current_prod_num, strlen(current_prod_num));
-		add_device_randomness(serial_no, strlen(serial_no));
-	}
 }
 
 
@@ -324,7 +317,7 @@ void __init collect_boot_cpu_data(void)
  *
  * o Enable CPU profiling hooks.
  */
-int init_per_cpu(int cpunum)
+int __init init_per_cpu(int cpunum)
 {
 	int ret;
 	struct pdc_coproc_cfg coproc_cfg;
@@ -395,14 +388,6 @@ show_cpuinfo (struct seq_file *m, void *v)
 				 boot_cpu_data.cpu_hz / 1000000,
 				 boot_cpu_data.cpu_hz % 1000000  );
 
-#ifdef CONFIG_GENERIC_ARCH_TOPOLOGY
-		seq_printf(m, "physical id\t: %d\n",
-				topology_physical_package_id(cpu));
-		seq_printf(m, "siblings\t: %d\n",
-				cpumask_weight(topology_core_cpumask(cpu)));
-		seq_printf(m, "core id\t\t: %d\n", topology_core_id(cpu));
-#endif
-
 		seq_printf(m, "capabilities\t:");
 		if (boot_cpu_data.pdc.capabilities & PDC_MODEL_OS32)
 			seq_puts(m, " os32");
@@ -423,7 +408,8 @@ show_cpuinfo (struct seq_file *m, void *v)
 		}
 		seq_printf(m, " (0x%02lx)\n", boot_cpu_data.pdc.capabilities);
 
-		seq_printf(m, "model\t\t: %s - %s\n",
+		seq_printf(m, "model\t\t: %s\n"
+				"model name\t: %s\n",
 				 boot_cpu_data.pdc.sys_model_name,
 				 cpuinfo->dev ?
 				 cpuinfo->dev->name : "Unknown");
@@ -437,8 +423,8 @@ show_cpuinfo (struct seq_file *m, void *v)
 		show_cache_info(m);
 
 		seq_printf(m, "bogomips\t: %lu.%02lu\n",
-			     loops_per_jiffy / (500000 / HZ),
-			     loops_per_jiffy / (5000 / HZ) % 100);
+			     cpuinfo->loops_per_jiffy / (500000 / HZ),
+			     (cpuinfo->loops_per_jiffy / (5000 / HZ)) % 100);
 
 		seq_printf(m, "software id\t: %ld\n\n",
 				boot_cpu_data.pdc.model.sw_id);
@@ -464,13 +450,5 @@ static struct parisc_driver cpu_driver __refdata = {
  */
 void __init processor_init(void)
 {
-	unsigned int cpu;
-
-	reset_cpu_topology();
-
-	/* reset possible mask. We will mark those which are possible. */
-	for_each_possible_cpu(cpu)
-		set_cpu_possible(cpu, false);
-
 	register_parisc_driver(&cpu_driver);
 }

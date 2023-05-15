@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Atmel AT45xxx DataFlash MTD driver for lightweight SPI framework
  *
  * Largely derived from at91_dataflash.c:
  *  Copyright (C) 2003-2005 SAN People (Pty) Ltd
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version
+ * 2 of the License, or (at your option) any later version.
 */
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -105,13 +109,6 @@ static const struct of_device_id dataflash_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, dataflash_dt_ids);
 #endif
 
-static const struct spi_device_id dataflash_spi_ids[] = {
-	{ .name = "at45", },
-	{ .name = "dataflash", },
-	{ /* sentinel */ }
-};
-MODULE_DEVICE_TABLE(spi, dataflash_spi_ids);
-
 /* ......................................................................... */
 
 /*
@@ -143,7 +140,7 @@ static int dataflash_waitready(struct spi_device *spi)
 		if (status & (1 << 7))	/* RDY/nBSY */
 			return status;
 
-		usleep_range(3000, 4000);
+		msleep(3);
 	}
 }
 
@@ -222,6 +219,10 @@ static int dataflash_erase(struct mtd_info *mtd, struct erase_info *instr)
 		}
 	}
 	mutex_unlock(&priv->lock);
+
+	/* Inform MTD subsystem that erase is complete */
+	instr->state = MTD_ERASE_DONE;
+	mtd_erase_callback(instr);
 
 	return 0;
 }
@@ -534,7 +535,7 @@ static int dataflash_read_user_otp(struct mtd_info *mtd,
 }
 
 static int dataflash_write_user_otp(struct mtd_info *mtd,
-		loff_t from, size_t len, size_t *retlen, const u_char *buf)
+		loff_t from, size_t len, size_t *retlen, u_char *buf)
 {
 	struct spi_message	m;
 	const size_t		l = 4 + 64;
@@ -916,15 +917,17 @@ static int dataflash_probe(struct spi_device *spi)
 	return status;
 }
 
-static void dataflash_remove(struct spi_device *spi)
+static int dataflash_remove(struct spi_device *spi)
 {
 	struct dataflash	*flash = spi_get_drvdata(spi);
+	int			status;
 
 	dev_dbg(&spi->dev, "remove\n");
 
-	WARN_ON(mtd_device_unregister(&flash->mtd));
-
-	kfree(flash);
+	status = mtd_device_unregister(&flash->mtd);
+	if (status == 0)
+		kfree(flash);
+	return status;
 }
 
 static struct spi_driver dataflash_driver = {
@@ -932,9 +935,9 @@ static struct spi_driver dataflash_driver = {
 		.name		= "mtd_dataflash",
 		.of_match_table = of_match_ptr(dataflash_dt_ids),
 	},
+
 	.probe		= dataflash_probe,
 	.remove		= dataflash_remove,
-	.id_table	= dataflash_spi_ids,
 
 	/* FIXME:  investigate suspend and resume... */
 };

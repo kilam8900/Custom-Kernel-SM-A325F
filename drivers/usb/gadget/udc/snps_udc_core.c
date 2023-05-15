@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * amd5536.c -- AMD 5536 UDC high/full speed USB device controller
  *
- * Copyright (C) 2005-2007 AMD (https://www.amd.com)
+ * Copyright (C) 2005-2007 AMD (http://www.amd.com)
  * Author: Thomas Dahlmann
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 /*
@@ -36,6 +40,7 @@
 #include <asm/unaligned.h>
 #include "amd5536udc.h"
 
+static void udc_tasklet_disconnect(unsigned long);
 static void udc_setup_endpoints(struct udc *dev);
 static void udc_soft_reset(struct udc *dev);
 static struct udc_request *udc_alloc_bna_dummy(struct udc_ep *ep);
@@ -80,7 +85,7 @@ static int stop_timer;
  * This cannot be solved by letting the RX DMA disabled until a
  * request gets queued because there may be other OUT packets
  * in the FIFO (important for not blocking control traffic).
- * The value of set_rde controls the corresponding timer.
+ * The value of set_rde controls the correspondig timer.
  *
  * set_rde -1 == not used, means it is alloed to be set to 0 or 1
  * set_rde  0 == do not touch RDE, do no start the RDE timer
@@ -93,6 +98,11 @@ static DECLARE_COMPLETION(on_exit);
 static struct timer_list udc_pollstall_timer;
 static int stop_pollstall_timer;
 static DECLARE_COMPLETION(on_pollstall_exit);
+
+/* tasklet for usb disconnect */
+static DECLARE_TASKLET(disconnect_tasklet, udc_tasklet_disconnect,
+		(unsigned long) &udc);
+
 
 /* endpoint names used for print */
 static const char ep0_string[] = "ep0in";
@@ -941,14 +951,15 @@ static int prep_dma(struct udc_ep *ep, struct udc_request *req, gfp_t gfp)
 				UDC_DMA_STP_STS_BS_HOST_READY,
 				UDC_DMA_STP_STS_BS);
 
-		/* clear NAK by writing CNAK */
-		if (ep->naking) {
-			tmp = readl(&ep->regs->ctl);
-			tmp |= AMD_BIT(UDC_EPCTL_CNAK);
-			writel(tmp, &ep->regs->ctl);
-			ep->naking = 0;
-			UDC_QUEUE_CNAK(ep, ep->num);
-		}
+
+			/* clear NAK by writing CNAK */
+			if (ep->naking) {
+				tmp = readl(&ep->regs->ctl);
+				tmp |= AMD_BIT(UDC_EPCTL_CNAK);
+				writel(tmp, &ep->regs->ctl);
+				ep->naking = 0;
+				UDC_QUEUE_CNAK(ep, ep->num);
+			}
 
 	}
 
@@ -1633,8 +1644,6 @@ static void usb_connect(struct udc *dev)
  */
 static void usb_disconnect(struct udc *dev)
 {
-	u32 tmp;
-
 	/* Return if already disconnected */
 	if (!dev->connected)
 		return;
@@ -1646,6 +1655,23 @@ static void usb_disconnect(struct udc *dev)
 	/* mask interrupts */
 	udc_mask_unused_interrupts(dev);
 
+	/* REVISIT there doesn't seem to be a point to having this
+	 * talk to a tasklet ... do it directly, we already hold
+	 * the spinlock needed to process the disconnect.
+	 */
+
+	tasklet_schedule(&disconnect_tasklet);
+}
+
+/* Tasklet for disconnect to be outside of interrupt context */
+static void udc_tasklet_disconnect(unsigned long par)
+{
+	struct udc *dev = (struct udc *)(*((struct udc **) par));
+	u32 tmp;
+
+	DBG(dev, "Tasklet disconnect\n");
+	spin_lock_irq(&dev->lock);
+
 	if (dev->driver) {
 		spin_unlock(&dev->lock);
 		dev->driver->disconnect(&dev->gadget);
@@ -1654,10 +1680,13 @@ static void usb_disconnect(struct udc *dev)
 		/* empty queues */
 		for (tmp = 0; tmp < UDC_EP_NUM; tmp++)
 			empty_req_queue(&dev->ep[tmp]);
+
 	}
 
 	/* disable ep0 */
-	ep_init(dev->regs, &dev->ep[UDC_EP0IN_IX]);
+	ep_init(dev->regs,
+			&dev->ep[UDC_EP0IN_IX]);
+
 
 	if (!soft_reset_occured) {
 		/* init controller by soft reset */
@@ -1673,6 +1702,8 @@ static void usb_disconnect(struct udc *dev)
 		tmp = AMD_ADDBITS(tmp, UDC_DEVCFG_SPD_FS, UDC_DEVCFG_SPD);
 		writel(tmp, &dev->regs->cfg);
 	}
+
+	spin_unlock_irq(&dev->lock);
 }
 
 /* Reset the UDC core */
@@ -1702,7 +1733,7 @@ static void udc_soft_reset(struct udc *dev)
 }
 
 /* RDE timer callback to set RDE bit */
-static void udc_timer_function(struct timer_list *unused)
+static void udc_timer_function(unsigned long v)
 {
 	u32 tmp;
 
@@ -1782,7 +1813,7 @@ static void udc_handle_halt_state(struct udc_ep *ep)
 }
 
 /* Stall timer callback to poll S bit and set it again after */
-static void udc_pollstall_timer_function(struct timer_list *unused)
+static void udc_pollstall_timer_function(unsigned long v)
 {
 	struct udc_ep *ep;
 	int halted = 0;
@@ -1933,6 +1964,7 @@ static int amd5536_udc_start(struct usb_gadget *g,
 	struct udc *dev = to_amd5536_udc(g);
 	u32 tmp;
 
+	driver->driver.bus = NULL;
 	dev->driver = driver;
 
 	/* Some gadget drivers use both ep0 directions.
@@ -3035,12 +3067,14 @@ void udc_remove(struct udc *dev)
 	stop_timer++;
 	if (timer_pending(&udc_timer))
 		wait_for_completion(&on_exit);
-	del_timer_sync(&udc_timer);
+	if (udc_timer.data)
+		del_timer_sync(&udc_timer);
 	/* remove pollstall timer */
 	stop_pollstall_timer++;
 	if (timer_pending(&udc_pollstall_timer))
 		wait_for_completion(&on_pollstall_exit);
-	del_timer_sync(&udc_pollstall_timer);
+	if (udc_pollstall_timer.data)
+		del_timer_sync(&udc_pollstall_timer);
 	udc = NULL;
 }
 EXPORT_SYMBOL_GPL(udc_remove);
@@ -3130,6 +3164,10 @@ int udc_probe(struct udc *dev)
 	u32		reg;
 	int		retval;
 
+	/* mark timer as not initialized */
+	udc_timer.data = 0;
+	udc_pollstall_timer.data = 0;
+
 	/* device struct setup */
 	dev->gadget.ops = &udc_ops;
 
@@ -3169,8 +3207,13 @@ int udc_probe(struct udc *dev)
 		goto finished;
 
 	/* timer init */
-	timer_setup(&udc_timer, udc_timer_function, 0);
-	timer_setup(&udc_pollstall_timer, udc_pollstall_timer_function, 0);
+	init_timer(&udc_timer);
+	udc_timer.function = udc_timer_function;
+	udc_timer.data = 1;
+	/* timer pollstall init */
+	init_timer(&udc_pollstall_timer);
+	udc_pollstall_timer.function = udc_pollstall_timer_function;
+	udc_pollstall_timer.data = 1;
 
 	/* set SD */
 	reg = readl(&dev->regs->ctl);

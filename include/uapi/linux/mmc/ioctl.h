@@ -6,10 +6,7 @@
 #include <linux/major.h>
 
 struct mmc_ioc_cmd {
-	/*
-	 * Direction of data: nonzero = write, zero = read.
-	 * Bit 31 selects 'Reliable Write' for RPMB.
-	 */
+	/* Implies direction of data.  true = write, false = read */
 	int write_flag;
 
 	/* Application-specific command.  true = precede with CMD55 */
@@ -58,7 +55,7 @@ struct mmc_ioc_cmd {
  */
 struct mmc_ioc_multi_cmd {
 	__u64 num_of_cmds;
-	struct mmc_ioc_cmd cmds[];
+	struct mmc_ioc_cmd cmds[0];
 };
 
 #define MMC_IOC_CMD _IOWR(MMC_BLOCK_MAJOR, 0, struct mmc_ioc_cmd)
@@ -68,6 +65,7 @@ struct mmc_ioc_multi_cmd {
  *	commands in array in sequence to card.
  */
 #define MMC_IOC_MULTI_CMD _IOWR(MMC_BLOCK_MAJOR, 1, struct mmc_ioc_multi_cmd)
+#define MMC_IOC_WP_CMD _IOWR(MMC_BLOCK_MAJOR, 100, char)
 /*
  * Since this ioctl is only meant to enhance (and not replace) normal access
  * to the mmc bus device, an upper data transfer limit of MMC_IOC_MAX_BYTES

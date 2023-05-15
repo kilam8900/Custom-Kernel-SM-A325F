@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  FM Driver for Connectivity chip of Texas Instruments.
  *
@@ -17,14 +16,21 @@
  *  Copyright (C) 2011 Texas Instruments
  *  Author: Raja Mani <raja_mani@ti.com>
  *  Author: Manjunatha Halli <manjunatha_halli@ti.com>
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License version 2 as
+ *  published by the Free Software Foundation.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *  GNU General Public License for more details.
+ *
  */
 
-#include <linux/delay.h>
-#include <linux/firmware.h>
 #include <linux/module.h>
-#include <linux/nospec.h>
-#include <linux/jiffies.h>
-
+#include <linux/firmware.h>
+#include <linux/delay.h>
 #include "fmdrv.h"
 #include "fmdrv_v4l2.h"
 #include "fmdrv_common.h"
@@ -247,7 +253,7 @@ void fmc_update_region_info(struct fmdev *fmdev, u8 region_to_set)
  * FM common sub-module will schedule this tasklet whenever it receives
  * FM packet from ST driver.
  */
-static void recv_tasklet(struct tasklet_struct *t)
+static void recv_tasklet(unsigned long arg)
 {
 	struct fmdev *fmdev;
 	struct fm_irq *irq_info;
@@ -256,7 +262,7 @@ static void recv_tasklet(struct tasklet_struct *t)
 	u8 num_fm_hci_cmds;
 	unsigned long flags;
 
-	fmdev = from_tasklet(fmdev, t, tx_task);
+	fmdev = (struct fmdev *)arg;
 	irq_info = &fmdev->irq_info;
 	/* Process all packets in the RX queue */
 	while ((skb = skb_dequeue(&fmdev->rx_q))) {
@@ -331,19 +337,19 @@ static void recv_tasklet(struct tasklet_struct *t)
 }
 
 /* FM send tasklet: is scheduled when FM packet has to be sent to chip */
-static void send_tasklet(struct tasklet_struct *t)
+static void send_tasklet(unsigned long arg)
 {
 	struct fmdev *fmdev;
 	struct sk_buff *skb;
 	int len;
 
-	fmdev = from_tasklet(fmdev, t, tx_task);
+	fmdev = (struct fmdev *)arg;
 
 	if (!atomic_read(&fmdev->tx_cnt))
 		return;
 
 	/* Check, is there any timeout happened to last transmitted packet */
-	if (time_is_before_jiffies(fmdev->last_tx_jiffies + FM_DRV_TX_TIMEOUT)) {
+	if ((jiffies - fmdev->last_tx_jiffies) > FM_DRV_TX_TIMEOUT) {
 		fmerr("TX timeout occurred\n");
 		atomic_set(&fmdev->tx_cnt, 1);
 	}
@@ -538,13 +544,13 @@ static inline void fm_irq_common_cmd_resp_helper(struct fmdev *fmdev, u8 stage)
  * interrupt process. Therefore reset stage index to re-enable default
  * interrupts. So that next interrupt will be processed as usual.
  */
-static void int_timeout_handler(struct timer_list *t)
+static void int_timeout_handler(unsigned long data)
 {
 	struct fmdev *fmdev;
 	struct fm_irq *fmirq;
 
 	fmdbg("irq: timeout,trying to re-enable fm interrupts\n");
-	fmdev = from_timer(fmdev, t, irq_info.timer);
+	fmdev = (struct fmdev *)data;
 	fmirq = &fmdev->irq_info;
 	fmirq->retry++;
 
@@ -703,7 +709,7 @@ static void fm_irq_handle_rdsdata_getcmd_resp(struct fmdev *fmdev)
 	struct fm_rds *rds = &fmdev->rx.rds;
 	unsigned long group_idx, flags;
 	u8 *rds_data, meta_data, tmpbuf[FM_RDS_BLK_SIZE];
-	u8 type, blk_idx, idx;
+	u8 type, blk_idx;
 	u16 cur_picode;
 	u32 rds_len;
 
@@ -736,11 +742,9 @@ static void fm_irq_handle_rdsdata_getcmd_resp(struct fmdev *fmdev)
 		}
 
 		/* Skip checkword (control) byte and copy only data byte */
-		idx = array_index_nospec(blk_idx * (FM_RDS_BLK_SIZE - 1),
-					 FM_RX_RDS_INFO_FIELD_MAX - (FM_RDS_BLK_SIZE - 1));
-
-		memcpy(&rds_fmt.data.groupdatabuff.buff[idx], rds_data,
-		       FM_RDS_BLK_SIZE - 1);
+		memcpy(&rds_fmt.data.groupdatabuff.
+				buff[blk_idx * (FM_RDS_BLK_SIZE - 1)],
+				rds_data, (FM_RDS_BLK_SIZE - 1));
 
 		rds->last_blk_idx = blk_idx;
 
@@ -907,7 +911,7 @@ static void fm_irq_afjump_setfreq(struct fmdev *fmdev)
 	u16 frq_index;
 	u16 payload;
 
-	fmdbg("Switch to %d KHz\n", fmdev->rx.stat_info.af_cache[fmdev->rx.afjump_idx]);
+	fmdbg("Swtich to %d KHz\n", fmdev->rx.stat_info.af_cache[fmdev->rx.afjump_idx]);
 	frq_index = (fmdev->rx.stat_info.af_cache[fmdev->rx.afjump_idx] -
 	     fmdev->rx.region.bot_freq) / FM_FREQ_MUL;
 
@@ -1046,7 +1050,7 @@ static void fm_irq_handle_intmsk_cmd_resp(struct fmdev *fmdev)
 		clear_bit(FM_INTTASK_RUNNING, &fmdev->flag);
 }
 
-/* Returns availability of RDS data in internal buffer */
+/* Returns availability of RDS data in internel buffer */
 int fmc_is_rds_data_available(struct fmdev *fmdev, struct file *file,
 				struct poll_table_struct *pts)
 {
@@ -1442,7 +1446,7 @@ static long fm_st_receive(void *arg, struct sk_buff *skb)
 {
 	struct fmdev *fmdev;
 
-	fmdev = arg;
+	fmdev = (struct fmdev *)arg;
 
 	if (skb == NULL) {
 		fmerr("Invalid SKB received from ST\n");
@@ -1520,7 +1524,7 @@ int fmc_prepare(struct fmdev *fmdev)
 		}
 
 		ret = 0;
-	} else if (ret < 0) {
+	} else if (ret == -1) {
 		fmerr("st_register failed %d\n", ret);
 		return -EAGAIN;
 	}
@@ -1540,17 +1544,18 @@ int fmc_prepare(struct fmdev *fmdev)
 
 	/* Initialize TX queue and TX tasklet */
 	skb_queue_head_init(&fmdev->tx_q);
-	tasklet_setup(&fmdev->tx_task, send_tasklet);
+	tasklet_init(&fmdev->tx_task, send_tasklet, (unsigned long)fmdev);
 
 	/* Initialize RX Queue and RX tasklet */
 	skb_queue_head_init(&fmdev->rx_q);
-	tasklet_setup(&fmdev->rx_task, recv_tasklet);
+	tasklet_init(&fmdev->rx_task, recv_tasklet, (unsigned long)fmdev);
 
 	fmdev->irq_info.stage = 0;
 	atomic_set(&fmdev->tx_cnt, 1);
 	fmdev->resp_comp = NULL;
 
-	timer_setup(&fmdev->irq_info.timer, int_timeout_handler, 0);
+	setup_timer(&fmdev->irq_info.timer, &int_timeout_handler,
+		    (unsigned long)fmdev);
 	/*TODO: add FM_STIC_EVENT later */
 	fmdev->irq_info.mask = FM_MAL_EVENT;
 

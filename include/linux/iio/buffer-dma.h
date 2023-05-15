@@ -1,7 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright 2013-2015 Analog Devices Inc.
  *  Author: Lars-Peter Clausen <lars@metafoo.de>
+ *
+ * Licensed under the GPL-2.
  */
 
 #ifndef __INDUSTRIALIO_DMA_BUFFER_H__
@@ -11,11 +12,16 @@
 #include <linux/kref.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
-#include <linux/iio/buffer_impl.h>
+#include <linux/iio/buffer.h>
 
 struct iio_dma_buffer_queue;
 struct iio_dma_buffer_ops;
 struct device;
+
+struct iio_buffer_block {
+	u32 size;
+	u32 bytes_used;
+};
 
 /**
  * enum iio_block_state - State of a struct iio_dma_buffer_block

@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Analog Devices AD-FMCOMMS1-EBZ board I2C-SPI bridge driver
  *
  * Copyright 2012 Analog Devices Inc.
  * Author: Lars-Peter Clausen <lars@metafoo.de>
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/kernel.h>
@@ -188,7 +189,8 @@ static int spi_xcomm_transfer_one(struct spi_master *master,
 		}
 		status = 0;
 
-		spi_transfer_delay_exec(t);
+		if (t->delay_usecs)
+			udelay(t->delay_usecs);
 
 		is_first = false;
 	}
@@ -202,7 +204,8 @@ static int spi_xcomm_transfer_one(struct spi_master *master,
 	return status;
 }
 
-static int spi_xcomm_probe(struct i2c_client *i2c)
+static int spi_xcomm_probe(struct i2c_client *i2c,
+	const struct i2c_device_id *id)
 {
 	struct spi_xcomm *spi_xcomm;
 	struct spi_master *master;
@@ -241,7 +244,7 @@ static struct i2c_driver spi_xcomm_driver = {
 		.name	= "spi-xcomm",
 	},
 	.id_table	= spi_xcomm_ids,
-	.probe_new	= spi_xcomm_probe,
+	.probe		= spi_xcomm_probe,
 };
 module_i2c_driver(spi_xcomm_driver);
 

@@ -1,10 +1,13 @@
-/* SPDX-License-Identifier: GPL-2.0
- *
+/*
  * linux/sound/soc-dapm.h -- ALSA SoC Dynamic Audio Power Management
  *
- * Author:	Liam Girdwood
- * Created:	Aug 11th 2005
+ * Author:		Liam Girdwood
+ * Created:		Aug 11th 2005
  * Copyright:	Wolfson Microelectronics. PLC.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #ifndef __LINUX_SND_SOC_DAPM_H
@@ -16,9 +19,6 @@
 #include <sound/asoc.h>
 
 struct device;
-struct snd_pcm_substream;
-struct snd_soc_pcm_runtime;
-struct soc_enum;
 
 /* widget has no PM register bit */
 #define SND_SOC_NOPM	-1
@@ -217,21 +217,21 @@ struct soc_enum;
 	.event_flags = SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD}
 
 /* stream domain */
-#define SND_SOC_DAPM_AIF_IN(wname, stname, wchan, wreg, wshift, winvert) \
+#define SND_SOC_DAPM_AIF_IN(wname, stname, wslot, wreg, wshift, winvert) \
 {	.id = snd_soc_dapm_aif_in, .name = wname, .sname = stname, \
-	.channel = wchan, SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), }
-#define SND_SOC_DAPM_AIF_IN_E(wname, stname, wchan, wreg, wshift, winvert, \
+	SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), }
+#define SND_SOC_DAPM_AIF_IN_E(wname, stname, wslot, wreg, wshift, winvert, \
 			      wevent, wflags)				\
 {	.id = snd_soc_dapm_aif_in, .name = wname, .sname = stname, \
-	.channel = wchan, SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), \
+	SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), \
 	.event = wevent, .event_flags = wflags }
-#define SND_SOC_DAPM_AIF_OUT(wname, stname, wchan, wreg, wshift, winvert) \
+#define SND_SOC_DAPM_AIF_OUT(wname, stname, wslot, wreg, wshift, winvert) \
 {	.id = snd_soc_dapm_aif_out, .name = wname, .sname = stname, \
-	.channel = wchan, SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), }
-#define SND_SOC_DAPM_AIF_OUT_E(wname, stname, wchan, wreg, wshift, winvert, \
+	SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), }
+#define SND_SOC_DAPM_AIF_OUT_E(wname, stname, wslot, wreg, wshift, winvert, \
 			     wevent, wflags)				\
 {	.id = snd_soc_dapm_aif_out, .name = wname, .sname = stname, \
-	.channel = wchan, SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), \
+	SND_SOC_DAPM_INIT_REG_VAL(wreg, wshift, winvert), \
 	.event = wevent, .event_flags = wflags }
 #define SND_SOC_DAPM_DAC(wname, stname, wreg, wshift, winvert) \
 {	.id = snd_soc_dapm_dac, .name = wname, .sname = stname, \
@@ -269,13 +269,6 @@ struct soc_enum;
 	.reg = SND_SOC_NOPM, .shift = wdelay, .event = dapm_regulator_event, \
 	.event_flags = SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD, \
 	.on_val = wflags}
-#define SND_SOC_DAPM_PINCTRL(wname, active, sleep) \
-{	.id = snd_soc_dapm_pinctrl, .name = wname, \
-	.priv = (&(struct snd_soc_dapm_pinctrl_priv) \
-		{ .active_state = active, .sleep_state = sleep,}), \
-	.reg = SND_SOC_NOPM, .event = dapm_pinctrl_event, \
-	.event_flags = SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD }
-
 
 
 /* dapm kcontrol types */
@@ -342,27 +335,31 @@ struct soc_enum;
 #define SND_SOC_DAPM_STREAM_STOP		0x2
 #define SND_SOC_DAPM_STREAM_SUSPEND		0x4
 #define SND_SOC_DAPM_STREAM_RESUME		0x8
-#define SND_SOC_DAPM_STREAM_PAUSE_PUSH		0x10
+#define SND_SOC_DAPM_STREAM_PAUSE_PUSH	0x10
 #define SND_SOC_DAPM_STREAM_PAUSE_RELEASE	0x20
 
 /* dapm event types */
-#define SND_SOC_DAPM_PRE_PMU		0x1	/* before widget power up */
-#define SND_SOC_DAPM_POST_PMU		0x2	/* after  widget power up */
-#define SND_SOC_DAPM_PRE_PMD		0x4	/* before widget power down */
-#define SND_SOC_DAPM_POST_PMD		0x8	/* after  widget power down */
-#define SND_SOC_DAPM_PRE_REG		0x10	/* before audio path setup */
-#define SND_SOC_DAPM_POST_REG		0x20	/* after  audio path setup */
-#define SND_SOC_DAPM_WILL_PMU		0x40	/* called at start of sequence */
-#define SND_SOC_DAPM_WILL_PMD		0x80	/* called at start of sequence */
-#define SND_SOC_DAPM_PRE_POST_PMD	(SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD)
-#define SND_SOC_DAPM_PRE_POST_PMU	(SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU)
+#define SND_SOC_DAPM_PRE_PMU	0x1 	/* before widget power up */
+#define SND_SOC_DAPM_POST_PMU	0x2		/* after widget power up */
+#define SND_SOC_DAPM_PRE_PMD	0x4 	/* before widget power down */
+#define SND_SOC_DAPM_POST_PMD	0x8		/* after widget power down */
+#define SND_SOC_DAPM_PRE_REG	0x10	/* before audio path setup */
+#define SND_SOC_DAPM_POST_REG	0x20	/* after audio path setup */
+#define SND_SOC_DAPM_WILL_PMU   0x40    /* called at start of sequence */
+#define SND_SOC_DAPM_WILL_PMD   0x80    /* called at start of sequence */
+#define SND_SOC_DAPM_PRE_POST_PMD \
+				(SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD)
+#define SND_SOC_DAPM_PRE_POST_PMU \
+				(SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU)
 
 /* convenience event type detection */
-#define SND_SOC_DAPM_EVENT_ON(e)	(e & (SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU))
-#define SND_SOC_DAPM_EVENT_OFF(e)	(e & (SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD))
+#define SND_SOC_DAPM_EVENT_ON(e)	\
+	(e & (SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU))
+#define SND_SOC_DAPM_EVENT_OFF(e)	\
+	(e & (SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD))
 
 /* regulator widget flags */
-#define SND_SOC_DAPM_REGULATOR_BYPASS	0x1	/* bypass when disabled */
+#define SND_SOC_DAPM_REGULATOR_BYPASS     0x1     /* bypass when disabled */
 
 struct snd_soc_dapm_widget;
 enum snd_soc_dapm_type;
@@ -375,31 +372,16 @@ struct snd_soc_dapm_widget_list;
 struct snd_soc_dapm_update;
 enum snd_soc_dapm_direction;
 
-/*
- * Bias levels
- *
- * @ON:      Bias is fully on for audio playback and capture operations.
- * @PREPARE: Prepare for audio operations. Called before DAPM switching for
- *           stream start and stop operations.
- * @STANDBY: Low power standby state when no playback/capture operations are
- *           in progress. NOTE: The transition time between STANDBY and ON
- *           should be as fast as possible and no longer than 10ms.
- * @OFF:     Power Off. No restrictions on transition times.
- */
-enum snd_soc_bias_level {
-	SND_SOC_BIAS_OFF = 0,
-	SND_SOC_BIAS_STANDBY = 1,
-	SND_SOC_BIAS_PREPARE = 2,
-	SND_SOC_BIAS_ON = 3,
-};
-
-int dapm_regulator_event(struct snd_soc_dapm_widget *w, struct snd_kcontrol *kcontrol, int event);
-int dapm_clock_event(struct snd_soc_dapm_widget *w, struct snd_kcontrol *kcontrol, int event);
-int dapm_pinctrl_event(struct snd_soc_dapm_widget *w, struct snd_kcontrol *kcontrol, int event);
+int dapm_regulator_event(struct snd_soc_dapm_widget *w,
+			 struct snd_kcontrol *kcontrol, int event);
+int dapm_clock_event(struct snd_soc_dapm_widget *w,
+			 struct snd_kcontrol *kcontrol, int event);
 
 /* dapm controls */
-int snd_soc_dapm_put_volsw(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol);
-int snd_soc_dapm_get_volsw(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol);
+int snd_soc_dapm_put_volsw(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol);
+int snd_soc_dapm_get_volsw(struct snd_kcontrol *kcontrol,
+	struct snd_ctl_elem_value *ucontrol);
 int snd_soc_dapm_get_enum_double(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *ucontrol);
 int snd_soc_dapm_put_enum_double(struct snd_kcontrol *kcontrol,
@@ -411,24 +393,24 @@ int snd_soc_dapm_get_pin_switch(struct snd_kcontrol *kcontrol,
 int snd_soc_dapm_put_pin_switch(struct snd_kcontrol *kcontrol,
 	struct snd_ctl_elem_value *uncontrol);
 int snd_soc_dapm_new_controls(struct snd_soc_dapm_context *dapm,
-	const struct snd_soc_dapm_widget *widget, int num);
-struct snd_soc_dapm_widget *snd_soc_dapm_new_control(struct snd_soc_dapm_context *dapm,
+	const struct snd_soc_dapm_widget *widget,
+	int num);
+struct snd_soc_dapm_widget *snd_soc_dapm_new_control(
+		struct snd_soc_dapm_context *dapm,
 		const struct snd_soc_dapm_widget *widget);
-struct snd_soc_dapm_widget *snd_soc_dapm_new_control_unlocked(struct snd_soc_dapm_context *dapm,
-		const struct snd_soc_dapm_widget *widget);
-int snd_soc_dapm_new_dai_widgets(struct snd_soc_dapm_context *dapm, struct snd_soc_dai *dai);
-void snd_soc_dapm_free_widget(struct snd_soc_dapm_widget *w);
+int snd_soc_dapm_new_dai_widgets(struct snd_soc_dapm_context *dapm,
+				 struct snd_soc_dai *dai);
 int snd_soc_dapm_link_dai_widgets(struct snd_soc_card *card);
 void snd_soc_dapm_connect_dai_link_widgets(struct snd_soc_card *card);
-
-int snd_soc_dapm_update_dai(struct snd_pcm_substream *substream,
-			    struct snd_pcm_hw_params *params, struct snd_soc_dai *dai);
+int snd_soc_dapm_new_pcm(struct snd_soc_card *card,
+			 const struct snd_soc_pcm_stream *params,
+			 unsigned int num_params,
+			 struct snd_soc_dapm_widget *source,
+			 struct snd_soc_dapm_widget *sink);
 
 /* dapm path setup */
 int snd_soc_dapm_new_widgets(struct snd_soc_card *card);
 void snd_soc_dapm_free(struct snd_soc_dapm_context *dapm);
-void snd_soc_dapm_init(struct snd_soc_dapm_context *dapm,
-		       struct snd_soc_card *card, struct snd_soc_component *component);
 int snd_soc_dapm_add_routes(struct snd_soc_dapm_context *dapm,
 			    const struct snd_soc_dapm_route *route, int num);
 int snd_soc_dapm_del_routes(struct snd_soc_dapm_context *dapm,
@@ -436,36 +418,48 @@ int snd_soc_dapm_del_routes(struct snd_soc_dapm_context *dapm,
 int snd_soc_dapm_weak_routes(struct snd_soc_dapm_context *dapm,
 			     const struct snd_soc_dapm_route *route, int num);
 void snd_soc_dapm_free_widget(struct snd_soc_dapm_widget *w);
+void snd_soc_dapm_reset_cache(struct snd_soc_dapm_context *dapm);
 
 /* dapm events */
-void snd_soc_dapm_stream_event(struct snd_soc_pcm_runtime *rtd, int stream, int event);
-void snd_soc_dapm_stream_stop(struct snd_soc_pcm_runtime *rtd, int stream);
+void snd_soc_dapm_stream_event(struct snd_soc_pcm_runtime *rtd, int stream,
+	int event);
 void snd_soc_dapm_shutdown(struct snd_soc_card *card);
 
 /* external DAPM widget events */
 int snd_soc_dapm_mixer_update_power(struct snd_soc_dapm_context *dapm,
-		struct snd_kcontrol *kcontrol, int connect, struct snd_soc_dapm_update *update);
+		struct snd_kcontrol *kcontrol, int connect,
+		struct snd_soc_dapm_update *update);
 int snd_soc_dapm_mux_update_power(struct snd_soc_dapm_context *dapm,
 		struct snd_kcontrol *kcontrol, int mux, struct soc_enum *e,
 		struct snd_soc_dapm_update *update);
 
 /* dapm sys fs - used by the core */
 extern struct attribute *soc_dapm_dev_attrs[];
-void snd_soc_dapm_debugfs_init(struct snd_soc_dapm_context *dapm, struct dentry *parent);
+void snd_soc_dapm_debugfs_init(struct snd_soc_dapm_context *dapm,
+				struct dentry *parent);
 
 /* dapm audio pin control and status */
-int snd_soc_dapm_enable_pin(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_enable_pin_unlocked(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_disable_pin(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_disable_pin_unlocked(struct snd_soc_dapm_context *dapm, const char *pin);
+int snd_soc_dapm_enable_pin(struct snd_soc_dapm_context *dapm,
+			    const char *pin);
+int snd_soc_dapm_enable_pin_unlocked(struct snd_soc_dapm_context *dapm,
+				     const char *pin);
+int snd_soc_dapm_disable_pin(struct snd_soc_dapm_context *dapm,
+			     const char *pin);
+int snd_soc_dapm_disable_pin_unlocked(struct snd_soc_dapm_context *dapm,
+				      const char *pin);
 int snd_soc_dapm_nc_pin(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_nc_pin_unlocked(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_get_pin_status(struct snd_soc_dapm_context *dapm, const char *pin);
+int snd_soc_dapm_nc_pin_unlocked(struct snd_soc_dapm_context *dapm,
+				 const char *pin);
+int snd_soc_dapm_get_pin_status(struct snd_soc_dapm_context *dapm,
+				const char *pin);
 int snd_soc_dapm_sync(struct snd_soc_dapm_context *dapm);
 int snd_soc_dapm_sync_unlocked(struct snd_soc_dapm_context *dapm);
-int snd_soc_dapm_force_enable_pin(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_force_enable_pin_unlocked(struct snd_soc_dapm_context *dapm, const char *pin);
-int snd_soc_dapm_ignore_suspend(struct snd_soc_dapm_context *dapm, const char *pin);
+int snd_soc_dapm_force_enable_pin(struct snd_soc_dapm_context *dapm,
+				  const char *pin);
+int snd_soc_dapm_force_enable_pin_unlocked(struct snd_soc_dapm_context *dapm,
+					   const char *pin);
+int snd_soc_dapm_ignore_suspend(struct snd_soc_dapm_context *dapm,
+				const char *pin);
 unsigned int dapm_kcontrol_get_value(const struct snd_kcontrol *kcontrol);
 
 /* Mostly internal - should not normally be used */
@@ -474,37 +468,40 @@ void dapm_mark_endpoints_dirty(struct snd_soc_card *card);
 /* dapm path query */
 int snd_soc_dapm_dai_get_connected_widgets(struct snd_soc_dai *dai, int stream,
 	struct snd_soc_dapm_widget_list **list,
-	bool (*custom_stop_condition)(struct snd_soc_dapm_widget *, enum snd_soc_dapm_direction));
-void snd_soc_dapm_dai_free_widgets(struct snd_soc_dapm_widget_list **list);
+	bool (*custom_stop_condition)(struct snd_soc_dapm_widget *,
+				      enum snd_soc_dapm_direction));
 
-struct snd_soc_dapm_context *snd_soc_dapm_kcontrol_dapm(struct snd_kcontrol *kcontrol);
-struct snd_soc_dapm_widget *snd_soc_dapm_kcontrol_widget(struct snd_kcontrol *kcontrol);
+struct snd_soc_dapm_context *snd_soc_dapm_kcontrol_dapm(
+	struct snd_kcontrol *kcontrol);
 
-int snd_soc_dapm_force_bias_level(struct snd_soc_dapm_context *dapm, enum snd_soc_bias_level level);
+struct snd_soc_dapm_widget *snd_soc_dapm_kcontrol_widget(
+		struct snd_kcontrol *kcontrol);
+
+int snd_soc_dapm_force_bias_level(struct snd_soc_dapm_context *dapm,
+	enum snd_soc_bias_level level);
 
 /* dapm widget types */
 enum snd_soc_dapm_type {
 	snd_soc_dapm_input = 0,		/* input pin */
 	snd_soc_dapm_output,		/* output pin */
-	snd_soc_dapm_mux,		/* selects 1 analog signal from many inputs */
-	snd_soc_dapm_demux,		/* connects the input to one of multiple outputs */
-	snd_soc_dapm_mixer,		/* mixes several analog signals together */
-	snd_soc_dapm_mixer_named_ctl,	/* mixer with named controls */
-	snd_soc_dapm_pga,		/* programmable gain/attenuation (volume) */
-	snd_soc_dapm_out_drv,		/* output driver */
-	snd_soc_dapm_adc,		/* analog to digital converter */
-	snd_soc_dapm_dac,		/* digital to analog converter */
+	snd_soc_dapm_mux,			/* selects 1 analog signal from many inputs */
+	snd_soc_dapm_demux,			/* connects the input to one of multiple outputs */
+	snd_soc_dapm_mixer,			/* mixes several analog signals together */
+	snd_soc_dapm_mixer_named_ctl,		/* mixer with named controls */
+	snd_soc_dapm_pga,			/* programmable gain/attenuation (volume) */
+	snd_soc_dapm_out_drv,			/* output driver */
+	snd_soc_dapm_adc,			/* analog to digital converter */
+	snd_soc_dapm_dac,			/* digital to analog converter */
 	snd_soc_dapm_micbias,		/* microphone bias (power) - DEPRECATED: use snd_soc_dapm_supply */
-	snd_soc_dapm_mic,		/* microphone */
-	snd_soc_dapm_hp,		/* headphones */
-	snd_soc_dapm_spk,		/* speaker */
-	snd_soc_dapm_line,		/* line input/output */
+	snd_soc_dapm_mic,			/* microphone */
+	snd_soc_dapm_hp,			/* headphones */
+	snd_soc_dapm_spk,			/* speaker */
+	snd_soc_dapm_line,			/* line input/output */
 	snd_soc_dapm_switch,		/* analog switch */
-	snd_soc_dapm_vmid,		/* codec bias/vmid - to minimise pops */
-	snd_soc_dapm_pre,		/* machine specific pre widget - exec first */
-	snd_soc_dapm_post,		/* machine specific post widget - exec last */
+	snd_soc_dapm_vmid,			/* codec bias/vmid - to minimise pops */
+	snd_soc_dapm_pre,			/* machine specific pre widget - exec first */
+	snd_soc_dapm_post,			/* machine specific post widget - exec last */
 	snd_soc_dapm_supply,		/* power/clock supply */
-	snd_soc_dapm_pinctrl,		/* pinctrl */
 	snd_soc_dapm_regulator_supply,	/* external regulator */
 	snd_soc_dapm_clock_supply,	/* external clock */
 	snd_soc_dapm_aif_in,		/* audio interface input */
@@ -522,9 +519,6 @@ enum snd_soc_dapm_type {
 	snd_soc_dapm_asrc,		/* DSP/CODEC ASRC component */
 	snd_soc_dapm_encoder,		/* FW/SW audio encoder component */
 	snd_soc_dapm_decoder,		/* FW/SW audio decoder component */
-
-	/* Don't edit below this line */
-	SND_SOC_DAPM_TYPE_COUNT
 };
 
 enum snd_soc_dapm_subclass {
@@ -546,8 +540,6 @@ struct snd_soc_dapm_route {
 	/* Note: currently only supported for links where source is a supply */
 	int (*connected)(struct snd_soc_dapm_widget *source,
 			 struct snd_soc_dapm_widget *sink);
-
-	struct snd_soc_dobj dobj;
 };
 
 /* dapm audio path between two widgets */
@@ -568,9 +560,9 @@ struct snd_soc_dapm_path {
 	};
 
 	/* status */
-	u32 connect:1;		/* source and sink widgets are connected */
-	u32 walking:1;		/* path is in the process of being walked */
-	u32 weak:1;		/* path ignored for power management */
+	u32 connect:1;	/* source and sink widgets are connected */
+	u32 walking:1;  /* path is in the process of being walked */
+	u32 weak:1;	/* path ignored for power management */
 	u32 is_supply:1;	/* At least one of the connected widgets is a supply */
 
 	int (*connected)(struct snd_soc_dapm_widget *source,
@@ -584,14 +576,16 @@ struct snd_soc_dapm_path {
 /* dapm widget */
 struct snd_soc_dapm_widget {
 	enum snd_soc_dapm_type id;
-	const char *name;			/* widget name */
-	const char *sname;			/* stream name */
+	const char *name;		/* widget name */
+	const char *sname;	/* stream name */
 	struct list_head list;
 	struct snd_soc_dapm_context *dapm;
 
 	void *priv;				/* widget specific data */
 	struct regulator *regulator;		/* attached regulator */
-	struct pinctrl *pinctrl;		/* attached pinctrl */
+	const struct snd_soc_pcm_stream *params; /* params for dai links */
+	unsigned int num_params; /* number of params for dai links */
+	unsigned int params_select; /* currently selected param for dai link */
 
 	/* dapm control */
 	int reg;				/* negative reg = no direct dapm */
@@ -604,7 +598,7 @@ struct snd_soc_dapm_widget {
 	unsigned char connected:1;		/* connected codec pin */
 	unsigned char new:1;			/* cnew complete */
 	unsigned char force:1;			/* force state */
-	unsigned char ignore_suspend:1;		/* kept enabled over suspend */
+	unsigned char ignore_suspend:1;         /* kept enabled over suspend */
 	unsigned char new_power:1;		/* power from this run */
 	unsigned char power_checked:1;		/* power checked this run */
 	unsigned char is_supply:1;		/* Widget is a supply type widget */
@@ -633,8 +627,6 @@ struct snd_soc_dapm_widget {
 	int endpoints[2];
 
 	struct clk *clk;
-
-	int channel;
 };
 
 struct snd_soc_dapm_update {
@@ -648,24 +640,33 @@ struct snd_soc_dapm_update {
 	bool has_second_set;
 };
 
+struct snd_soc_dapm_wcache {
+	struct snd_soc_dapm_widget *widget;
+};
+
 /* DAPM context */
 struct snd_soc_dapm_context {
 	enum snd_soc_bias_level bias_level;
+	unsigned int idle_bias_off:1; /* Use BIAS_OFF instead of STANDBY */
+	/* Go to BIAS_OFF in suspend if the DAPM context is idle */
+	unsigned int suspend_bias_off:1;
+	void (*seq_notifier)(struct snd_soc_dapm_context *,
+			     enum snd_soc_dapm_type, int);
 
-	/* bit field */
-	unsigned int idle_bias_off:1;		/* Use BIAS_OFF instead of STANDBY */
-	unsigned int suspend_bias_off:1;	/* Use BIAS_OFF in suspend if the DAPM is idle */
-
-	struct device *dev;			/* from parent - for debug */
-	struct snd_soc_component *component;	/* parent component */
-	struct snd_soc_card *card;		/* parent card */
+	struct device *dev; /* from parent - for debug */
+	struct snd_soc_component *component; /* parent component */
+	struct snd_soc_card *card; /* parent card */
 
 	/* used during DAPM updates */
 	enum snd_soc_bias_level target_bias_level;
 	struct list_head list;
 
-	struct snd_soc_dapm_widget *wcache_sink;
-	struct snd_soc_dapm_widget *wcache_source;
+	int (*stream_event)(struct snd_soc_dapm_context *dapm, int event);
+	int (*set_bias_level)(struct snd_soc_dapm_context *dapm,
+			      enum snd_soc_bias_level level);
+
+	struct snd_soc_dapm_wcache path_sink_cache;
+	struct snd_soc_dapm_wcache path_source_cache;
 
 #ifdef CONFIG_DEBUG_FS
 	struct dentry *debugfs_dapm;
@@ -675,23 +676,13 @@ struct snd_soc_dapm_context {
 /* A list of widgets associated with an object, typically a snd_kcontrol */
 struct snd_soc_dapm_widget_list {
 	int num_widgets;
-	struct snd_soc_dapm_widget *widgets[];
+	struct snd_soc_dapm_widget *widgets[0];
 };
-
-#define for_each_dapm_widgets(list, i, widget)				\
-	for ((i) = 0;							\
-	     (i) < list->num_widgets && (widget = list->widgets[i]);	\
-	     (i)++)
 
 struct snd_soc_dapm_stats {
 	int power_checks;
 	int path_checks;
 	int neighbour_checks;
-};
-
-struct snd_soc_dapm_pinctrl_priv {
-	const char *active_state;
-	const char *sleep_state;
 };
 
 /**
@@ -732,11 +723,11 @@ enum snd_soc_dapm_direction {
 
 #define SND_SOC_DAPM_DIR_TO_EP(x) BIT(x)
 
-#define SND_SOC_DAPM_EP_SOURCE	SND_SOC_DAPM_DIR_TO_EP(SND_SOC_DAPM_DIR_IN)
-#define SND_SOC_DAPM_EP_SINK	SND_SOC_DAPM_DIR_TO_EP(SND_SOC_DAPM_DIR_OUT)
+#define SND_SOC_DAPM_EP_SOURCE SND_SOC_DAPM_DIR_TO_EP(SND_SOC_DAPM_DIR_IN)
+#define SND_SOC_DAPM_EP_SINK SND_SOC_DAPM_DIR_TO_EP(SND_SOC_DAPM_DIR_OUT)
 
 /**
- * snd_soc_dapm_widget_for_each_path - Iterates over all paths in the
+ * snd_soc_dapm_widget_for_each_sink_path - Iterates over all paths in the
  *   specified direction of a widget
  * @w: The widget
  * @dir: Whether to iterate over the paths where the specified widget is the
@@ -747,7 +738,7 @@ enum snd_soc_dapm_direction {
 	list_for_each_entry(p, &w->edges[dir], list_node[dir])
 
 /**
- * snd_soc_dapm_widget_for_each_path_safe - Iterates over all paths in the
+ * snd_soc_dapm_widget_for_each_sink_path_safe - Iterates over all paths in the
  *   specified direction of a widget
  * @w: The widget
  * @dir: Whether to iterate over the paths where the specified widget is the
@@ -755,7 +746,7 @@ enum snd_soc_dapm_direction {
  * @p: The path iterator variable
  * @next_p: Temporary storage for the next path
  *
- *  This function works like snd_soc_dapm_widget_for_each_path, expect that
+ *  This function works like snd_soc_dapm_widget_for_each_sink_path, expect that
  *  it is safe to remove the current path from the list while iterating
  */
 #define snd_soc_dapm_widget_for_each_path_safe(w, dir, p, next_p) \

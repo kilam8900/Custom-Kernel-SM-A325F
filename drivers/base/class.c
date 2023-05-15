@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * class.c - basic device class management
  *
@@ -6,9 +5,11 @@
  * Copyright (c) 2002-3 Open Source Development Labs
  * Copyright (c) 2003-2004 Greg Kroah-Hartman
  * Copyright (c) 2003-2004 IBM Corp.
+ *
+ * This file is released under the GPLv2
+ *
  */
 
-#include <linux/device/class.h>
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -16,7 +17,7 @@
 #include <linux/kdev_t.h>
 #include <linux/err.h>
 #include <linux/slab.h>
-#include <linux/blkdev.h>
+#include <linux/genhd.h>
 #include <linux/mutex.h>
 #include "base.h"
 
@@ -53,8 +54,6 @@ static void class_release(struct kobject *kobj)
 
 	pr_debug("class '%s': release.\n", class->name);
 
-	class->p = NULL;
-
 	if (class->class_release)
 		class->class_release(class);
 	else
@@ -64,9 +63,9 @@ static void class_release(struct kobject *kobj)
 	kfree(cp);
 }
 
-static const struct kobj_ns_type_operations *class_child_ns_type(const struct kobject *kobj)
+static const struct kobj_ns_type_operations *class_child_ns_type(struct kobject *kobj)
 {
-	const struct subsys_private *cp = to_subsys_private(kobj);
+	struct subsys_private *cp = to_subsys_private(kobj);
 	struct class *class = cp->class;
 
 	return class->ns_type;
@@ -77,7 +76,7 @@ static const struct sysfs_ops class_sysfs_ops = {
 	.store	   = class_attr_store,
 };
 
-static const struct kobj_type class_ktype = {
+static struct kobj_type class_ktype = {
 	.sysfs_ops	= &class_sysfs_ops,
 	.release	= class_release,
 	.child_ns_type	= class_child_ns_type,
@@ -99,7 +98,6 @@ int class_create_file_ns(struct class *cls, const struct class_attribute *attr,
 		error = -EINVAL;
 	return error;
 }
-EXPORT_SYMBOL_GPL(class_create_file_ns);
 
 void class_remove_file_ns(struct class *cls, const struct class_attribute *attr,
 			  const void *ns)
@@ -107,7 +105,6 @@ void class_remove_file_ns(struct class *cls, const struct class_attribute *attr,
 	if (cls)
 		sysfs_remove_file_ns(&cls->p->subsys.kobj, &attr->attr, ns);
 }
-EXPORT_SYMBOL_GPL(class_remove_file_ns);
 
 static struct class *class_get(struct class *cls)
 {
@@ -122,22 +119,16 @@ static void class_put(struct class *cls)
 		kset_put(&cls->p->subsys);
 }
 
-static struct device *klist_class_to_dev(struct klist_node *n)
-{
-	struct device_private *p = to_device_private_class(n);
-	return p->device;
-}
-
 static void klist_class_dev_get(struct klist_node *n)
 {
-	struct device *dev = klist_class_to_dev(n);
+	struct device *dev = container_of(n, struct device, knode_class);
 
 	get_device(dev);
 }
 
 static void klist_class_dev_put(struct klist_node *n)
 {
-	struct device *dev = klist_class_to_dev(n);
+	struct device *dev = container_of(n, struct device, knode_class);
 
 	put_device(dev);
 }
@@ -190,21 +181,12 @@ int __class_register(struct class *cls, struct lock_class_key *key)
 	cls->p = cp;
 
 	error = kset_register(&cp->subsys);
-	if (error)
-		goto err_out;
-
+	if (error) {
+		kfree(cp);
+		return error;
+	}
 	error = class_add_groups(class_get(cls), cls->class_groups);
 	class_put(cls);
-	if (error) {
-		kobject_del(&cp->subsys.kobj);
-		kfree_const(cp->subsys.kobj.name);
-		goto err_out;
-	}
-	return 0;
-
-err_out:
-	kfree(cp);
-	cls->p = NULL;
 	return error;
 }
 EXPORT_SYMBOL_GPL(__class_register);
@@ -215,7 +197,6 @@ void class_unregister(struct class *cls)
 	class_remove_groups(cls, cls->class_groups);
 	kset_unregister(&cls->p->subsys);
 }
-EXPORT_SYMBOL_GPL(class_unregister);
 
 static void class_create_release(struct class *cls)
 {
@@ -224,7 +205,7 @@ static void class_create_release(struct class *cls)
 }
 
 /**
- * __class_create - create a struct class structure
+ * class_create - create a struct class structure
  * @owner: pointer to the module that is to "own" this struct class
  * @name: pointer to a string for the name of this class.
  * @key: the lock_class_key for this class; used by mutex lock debugging
@@ -274,12 +255,11 @@ EXPORT_SYMBOL_GPL(__class_create);
  */
 void class_destroy(struct class *cls)
 {
-	if (IS_ERR_OR_NULL(cls))
+	if ((cls == NULL) || (IS_ERR(cls)))
 		return;
 
 	class_unregister(cls);
 }
-EXPORT_SYMBOL_GPL(class_destroy);
 
 /**
  * class_dev_iter_init - initialize class device iterator
@@ -299,7 +279,7 @@ void class_dev_iter_init(struct class_dev_iter *iter, struct class *class,
 	struct klist_node *start_knode = NULL;
 
 	if (start)
-		start_knode = &start->p->knode_class;
+		start_knode = &start->knode_class;
 	klist_iter_init_node(&class->p->klist_devices, &iter->ki, start_knode);
 	iter->type = type;
 }
@@ -326,7 +306,7 @@ struct device *class_dev_iter_next(struct class_dev_iter *iter)
 		knode = klist_next(&iter->ki);
 		if (!knode)
 			return NULL;
-		dev = klist_class_to_dev(knode);
+		dev = container_of(knode, struct device, knode_class);
 		if (!iter->type || iter->type == dev->type)
 			return dev;
 	}
@@ -464,7 +444,6 @@ int class_interface_register(struct class_interface *class_intf)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(class_interface_register);
 
 void class_interface_unregister(struct class_interface *class_intf)
 {
@@ -487,7 +466,6 @@ void class_interface_unregister(struct class_interface *class_intf)
 
 	class_put(parent);
 }
-EXPORT_SYMBOL_GPL(class_interface_unregister);
 
 ssize_t show_class_attr_string(struct class *class,
 			       struct class_attribute *attr, char *buf)
@@ -495,7 +473,7 @@ ssize_t show_class_attr_string(struct class *class,
 	struct class_attribute_string *cs;
 
 	cs = container_of(attr, struct class_attribute_string, attr);
-	return sysfs_emit(buf, "%s\n", cs->str);
+	return snprintf(buf, PAGE_SIZE, "%s\n", cs->str);
 }
 
 EXPORT_SYMBOL_GPL(show_class_attr_string);
@@ -594,3 +572,11 @@ int __init classes_init(void)
 		return -ENOMEM;
 	return 0;
 }
+
+EXPORT_SYMBOL_GPL(class_create_file_ns);
+EXPORT_SYMBOL_GPL(class_remove_file_ns);
+EXPORT_SYMBOL_GPL(class_unregister);
+EXPORT_SYMBOL_GPL(class_destroy);
+
+EXPORT_SYMBOL_GPL(class_interface_register);
+EXPORT_SYMBOL_GPL(class_interface_unregister);

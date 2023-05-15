@@ -1,17 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Freescale SCFG MSI(-X) support
  *
  * Copyright (C) 2016 Freescale Semiconductor.
  *
  * Author: Minghuan Lian <Minghuan.Lian@nxp.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/interrupt.h>
-#include <linux/iommu.h>
 #include <linux/irq.h>
 #include <linux/irqchip/chained_irq.h>
 #include <linux/irqdomain.h>
@@ -19,6 +21,7 @@
 #include <linux/of_pci.h>
 #include <linux/of_platform.h>
 #include <linux/spinlock.h>
+#include <linux/dma-iommu.h>
 
 #define MSI_IRQS_PER_MSIR	32
 #define MSI_MSIR_OFFSET		4
@@ -90,14 +93,10 @@ static void ls_scfg_msi_compose_msg(struct irq_data *data, struct msi_msg *msg)
 	msg->address_lo = lower_32_bits(msi_data->msiir_addr);
 	msg->data = data->hwirq;
 
-	if (msi_affinity_flag) {
-		const struct cpumask *mask;
+	if (msi_affinity_flag)
+		msg->data |= cpumask_first(data->common->affinity);
 
-		mask = irq_data_get_effective_affinity_mask(data);
-		msg->data |= cpumask_first(mask);
-	}
-
-	iommu_dma_compose_msi_msg(irq_data_get_msi_desc(data), msg);
+	iommu_dma_map_msi_msg(data->irq, msg);
 }
 
 static int ls_scfg_msi_set_affinity(struct irq_data *irq_data,
@@ -122,7 +121,7 @@ static int ls_scfg_msi_set_affinity(struct irq_data *irq_data,
 		return -EINVAL;
 	}
 
-	irq_data_update_effective_affinity(irq_data, cpumask_of(cpu));
+	cpumask_copy(irq_data->common->affinity, mask);
 
 	return IRQ_SET_MASK_OK;
 }
@@ -138,7 +137,6 @@ static int ls_scfg_msi_domain_irq_alloc(struct irq_domain *domain,
 					unsigned int nr_irqs,
 					void *args)
 {
-	msi_alloc_info_t *info = args;
 	struct ls_scfg_msi *msi_data = domain->host_data;
 	int pos, err = 0;
 
@@ -152,10 +150,6 @@ static int ls_scfg_msi_domain_irq_alloc(struct irq_domain *domain,
 		err = -ENOSPC;
 	spin_unlock(&msi_data->lock);
 
-	if (err)
-		return err;
-
-	err = iommu_dma_prepare_msi(info->desc, msi_data->msiir_addr);
 	if (err)
 		return err;
 
@@ -194,7 +188,7 @@ static void ls_scfg_msi_irq_handler(struct irq_desc *desc)
 	struct ls_scfg_msir *msir = irq_desc_get_handler_data(desc);
 	struct ls_scfg_msi *msi_data = msir->msi_data;
 	unsigned long val;
-	int pos, size, hwirq;
+	int pos, size, virq, hwirq;
 
 	chained_irq_enter(irq_desc_get_chip(desc), desc);
 
@@ -206,7 +200,9 @@ static void ls_scfg_msi_irq_handler(struct irq_desc *desc)
 	for_each_set_bit_from(pos, &val, size) {
 		hwirq = ((msir->bit_end - pos) << msi_data->cfg->ibs_shift) |
 			msir->srs;
-		generic_handle_domain_irq(msi_data->parent, hwirq);
+		virq = irq_find_mapping(msi_data->parent, hwirq);
+		if (virq)
+			generic_handle_irq(virq);
 	}
 
 	chained_irq_exit(irq_desc_get_chip(desc), desc);
@@ -323,7 +319,6 @@ static const struct of_device_id ls_scfg_msi_id[] = {
 	{ .compatible = "fsl,1s1021a-msi", .data = &ls1021_msi_cfg},
 	{ .compatible = "fsl,1s1043a-msi", .data = &ls1021_msi_cfg},
 
-	{ .compatible = "fsl,ls1012a-msi", .data = &ls1021_msi_cfg },
 	{ .compatible = "fsl,ls1021a-msi", .data = &ls1021_msi_cfg },
 	{ .compatible = "fsl,ls1043a-msi", .data = &ls1021_msi_cfg },
 	{ .compatible = "fsl,ls1043a-v1.1-msi", .data = &ls1043_v1_1_msi_cfg },
@@ -362,7 +357,10 @@ static int ls_scfg_msi_probe(struct platform_device *pdev)
 
 	msi_data->irqs_num = MSI_IRQS_PER_MSIR *
 			     (1 << msi_data->cfg->ibs_shift);
-	msi_data->used = devm_bitmap_zalloc(&pdev->dev, msi_data->irqs_num, GFP_KERNEL);
+	msi_data->used = devm_kcalloc(&pdev->dev,
+				    BITS_TO_LONGS(msi_data->irqs_num),
+				    sizeof(*msi_data->used),
+				    GFP_KERNEL);
 	if (!msi_data->used)
 		return -ENOMEM;
 	/*

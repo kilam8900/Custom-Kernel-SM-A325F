@@ -1,16 +1,28 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
 #ifndef _DWARF_AUX_H
 #define _DWARF_AUX_H
 /*
  * dwarf-aux.h : libdw auxiliary interfaces
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *
  */
 
 #include <dwarf.h>
 #include <elfutils/libdw.h>
 #include <elfutils/libdwfl.h>
 #include <elfutils/version.h>
-
-struct strbuf;
 
 /* Find the realpath of the target file */
 const char *cu_find_realpath(Dwarf_Die *cu_die, const char *fname);
@@ -19,10 +31,10 @@ const char *cu_find_realpath(Dwarf_Die *cu_die, const char *fname);
 const char *cu_get_comp_dir(Dwarf_Die *cu_die);
 
 /* Get a line number and file name for given address */
-int cu_find_lineinfo(Dwarf_Die *cudie, Dwarf_Addr addr,
+int cu_find_lineinfo(Dwarf_Die *cudie, unsigned long addr,
 		     const char **fname, int *lineno);
 
-/* Walk on functions at given address */
+/* Walk on funcitons at given address */
 int cu_walk_functions_at(Dwarf_Die *cu_die, Dwarf_Addr addr,
 			 int (*callback)(Dwarf_Die *, void *), void *data);
 
@@ -49,9 +61,6 @@ int die_get_call_lineno(Dwarf_Die *in_die);
 
 /* Get callsite file name of inlined function instance */
 const char *die_get_call_file(Dwarf_Die *in_die);
-
-/* Get declared file name of a DIE */
-const char *die_get_decl_file(Dwarf_Die *dw_die);
 
 /* Get type die */
 Dwarf_Die *die_get_type(Dwarf_Die *vr_die, Dwarf_Die *die_mem);

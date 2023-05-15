@@ -1,13 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) ST-Ericsson AB 2010
  * Authors:	Sjur Brendeland
  *		Daniel Martensson
+ * License terms: GNU General Public License (GPL) version 2
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ":%s(): " fmt, __func__
 
 #include <linux/fs.h>
+#include <linux/hardirq.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
@@ -53,6 +54,20 @@ struct chnl_net {
 	enum caif_states state;
 };
 
+static void robust_list_del(struct list_head *delete_node)
+{
+	struct list_head *list_node;
+	struct list_head *n;
+	ASSERT_RTNL();
+	list_for_each_safe(list_node, n, &chnl_net_list) {
+		if (list_node == delete_node) {
+			list_del(list_node);
+			return;
+		}
+	}
+	WARN_ON(1);
+}
+
 static int chnl_recv_cb(struct cflayer *layr, struct cfpkt *pkt)
 {
 	struct sk_buff *skb;
@@ -62,6 +77,8 @@ static int chnl_recv_cb(struct cflayer *layr, struct cfpkt *pkt)
 	u8 buf;
 
 	priv = container_of(layr, struct chnl_net, chnl);
+	if (!priv)
+		return -EINVAL;
 
 	skb = (struct sk_buff *) cfpkt_tonative(pkt);
 
@@ -99,7 +116,10 @@ static int chnl_recv_cb(struct cflayer *layr, struct cfpkt *pkt)
 	else
 		skb->ip_summed = CHECKSUM_NONE;
 
-	netif_rx(skb);
+	if (in_interrupt())
+		netif_rx(skb);
+	else
+		netif_rx_ni(skb);
 
 	/* Update statistics. */
 	priv->netdev->stats.rx_packets++;
@@ -155,7 +175,7 @@ static void chnl_flowctrl_cb(struct cflayer *layr, enum caif_ctrlcmd flow,
 		flow == CAIF_CTRLCMD_DEINIT_RSP ? "CLOSE/DEINIT" :
 		flow == CAIF_CTRLCMD_INIT_FAIL_RSP ? "OPEN_FAIL" :
 		flow == CAIF_CTRLCMD_REMOTE_SHUTDOWN_IND ?
-		 "REMOTE_SHUTDOWN" : "UNKNOWN CTRL COMMAND");
+		 "REMOTE_SHUTDOWN" : "UKNOWN CTRL COMMAND");
 
 
 
@@ -192,8 +212,7 @@ static void chnl_flowctrl_cb(struct cflayer *layr, enum caif_ctrlcmd flow,
 	}
 }
 
-static netdev_tx_t chnl_net_start_xmit(struct sk_buff *skb,
-				       struct net_device *dev)
+static int chnl_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct chnl_net *priv;
 	struct cfpkt *pkt = NULL;
@@ -310,6 +329,9 @@ static int chnl_net_open(struct net_device *dev)
 
 	if (result == 0) {
 		pr_debug("connect timeout\n");
+		caif_disconnect_client(dev_net(dev), &priv->chnl);
+		priv->state = CAIF_DISCONNECTED;
+		pr_debug("state disconnected\n");
 		result = -ETIMEDOUT;
 		goto error;
 	}
@@ -347,7 +369,6 @@ static int chnl_net_init(struct net_device *dev)
 	ASSERT_RTNL();
 	priv = netdev_priv(dev);
 	strncpy(priv->name, dev->name, sizeof(priv->name));
-	INIT_LIST_HEAD(&priv->list_field);
 	return 0;
 }
 
@@ -356,7 +377,7 @@ static void chnl_net_uninit(struct net_device *dev)
 	struct chnl_net *priv;
 	ASSERT_RTNL();
 	priv = netdev_priv(dev);
-	list_del_init(&priv->list_field);
+	robust_list_del(&priv->list_field);
 }
 
 static const struct net_device_ops netdev_ops = {
@@ -521,7 +542,7 @@ static void __exit chnl_exit_module(void)
 	rtnl_lock();
 	list_for_each_safe(list_node, _tmp, &chnl_net_list) {
 		dev = list_entry(list_node, struct chnl_net, list_field);
-		list_del_init(list_node);
+		list_del(list_node);
 		delete_device(dev);
 	}
 	rtnl_unlock();

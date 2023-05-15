@@ -1,18 +1,31 @@
 #!/bin/bash
-# SPDX-License-Identifier: GPL-2.0+
-#
 # Usage: configcheck.sh .config .config-template
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, you can access it online at
+# http://www.gnu.org/licenses/gpl-2.0.html.
 #
 # Copyright (C) IBM Corporation, 2011
 #
-# Authors: Paul E. McKenney <paulmck@linux.ibm.com>
+# Authors: Paul E. McKenney <paulmck@linux.vnet.ibm.com>
 
-T="`mktemp -d ${TMPDIR-/tmp}/configcheck.sh.XXXXXX`"
+T=/tmp/abat-chk-config.sh.$$
 trap 'rm -rf $T' 0
+mkdir $T
 
-sed -e 's/"//g' < $1 > $T/.config
+cat $1 > $T/.config
 
-sed -e 's/"//g' -e 's/\(.*\)=n/# \1 is not set/' -e 's/^#CHECK#//' < $2 |
+cat $2 | sed -e 's/\(.*\)=n/# \1 is not set/' -e 's/^#CHECK#//' |
 awk	'
 {
 		print "if grep -q \"" $0 "\" < '"$T/.config"'";

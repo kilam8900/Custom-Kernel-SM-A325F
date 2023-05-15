@@ -23,14 +23,11 @@
  * Authors: Dave Airlie
  *          Alex Deucher
  */
-
-#include <drm/drm_fixed.h>
-#include <drm/drm_fourcc.h>
-#include <drm/drm_framebuffer.h>
-#include <drm/drm_modeset_helper_vtables.h>
-#include <drm/drm_vblank.h>
+#include <drm/drmP.h>
+#include <drm/drm_crtc_helper.h>
+#include <drm/drm_fb_helper.h>
 #include <drm/radeon_drm.h>
-
+#include <drm/drm_fixed.h>
 #include "radeon.h"
 #include "atom.h"
 #include "atom-bits.h"
@@ -244,8 +241,9 @@ static void atombios_blank_crtc(struct drm_crtc *crtc, int state)
 
 	atom_execute_table(rdev->mode_info.atom_context, index, (uint32_t *)&args);
 
-	if (ASIC_IS_DCE8(rdev))
+	if (ASIC_IS_DCE8(rdev)) {
 		WREG32(vga_control_regs[radeon_crtc->crtc_id], vga_control);
+	}
 }
 
 static void atombios_powergate_crtc(struct drm_crtc *crtc, int state)
@@ -616,6 +614,13 @@ static u32 atombios_adjust_pll(struct drm_crtc *crtc,
 		}
 	}
 
+	if (radeon_encoder->is_mst_encoder) {
+		struct radeon_encoder_mst *mst_enc = radeon_encoder->enc_priv;
+		struct radeon_connector_atom_dig *dig_connector = mst_enc->connector->con_priv;
+
+		dp_clock = dig_connector->dp_clock;
+	}
+
 	/* use recommended ref_div for ss */
 	if (radeon_encoder->devices & (ATOM_DEVICE_LCD_SUPPORT)) {
 		if (radeon_crtc->ss_enabled) {
@@ -964,7 +969,9 @@ static bool atombios_crtc_prepare_pll(struct drm_crtc *crtc, struct drm_display_
 	radeon_crtc->bpc = 8;
 	radeon_crtc->ss_enabled = false;
 
-	if ((radeon_encoder->active_device & (ATOM_DEVICE_LCD_SUPPORT | ATOM_DEVICE_DFP_SUPPORT)) ||
+	if (radeon_encoder->is_mst_encoder) {
+		radeon_dp_mst_prepare_pll(crtc, mode);
+	} else if ((radeon_encoder->active_device & (ATOM_DEVICE_LCD_SUPPORT | ATOM_DEVICE_DFP_SUPPORT)) ||
 	    (radeon_encoder_get_dp_bridge_encoder_id(radeon_crtc->encoder) != ENCODER_OBJECT_ID_NONE)) {
 		struct radeon_encoder_atom_dig *dig = radeon_encoder->enc_priv;
 		struct drm_connector *connector =
@@ -1138,6 +1145,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
 	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_framebuffer *radeon_fb;
 	struct drm_framebuffer *target_fb;
 	struct drm_gem_object *obj;
 	struct radeon_bo *rbo;
@@ -1148,6 +1156,7 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	u32 tmp, viewport_w, viewport_h;
 	int r;
 	bool bypass_lut = false;
+	struct drm_format_name_buf format_name;
 
 	/* no fb bound */
 	if (!atomic && !crtc->primary->fb) {
@@ -1155,15 +1164,19 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 		return 0;
 	}
 
-	if (atomic)
+	if (atomic) {
+		radeon_fb = to_radeon_framebuffer(fb);
 		target_fb = fb;
-	else
+	}
+	else {
+		radeon_fb = to_radeon_framebuffer(crtc->primary->fb);
 		target_fb = crtc->primary->fb;
+	}
 
 	/* If atomic, assume fb object is pinned & idle & fenced and
 	 * just update base pointers
 	 */
-	obj = target_fb->obj[0];
+	obj = radeon_fb->obj;
 	rbo = gem_to_radeon_bo(obj);
 	r = radeon_bo_reserve(rbo, false);
 	if (unlikely(r != 0))
@@ -1246,19 +1259,9 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 		/* Greater 8 bpc fb needs to bypass hw-lut to retain precision */
 		bypass_lut = true;
 		break;
-	case DRM_FORMAT_XBGR8888:
-	case DRM_FORMAT_ABGR8888:
-		fb_format = (EVERGREEN_GRPH_DEPTH(EVERGREEN_GRPH_DEPTH_32BPP) |
-			     EVERGREEN_GRPH_FORMAT(EVERGREEN_GRPH_FORMAT_ARGB8888));
-		fb_swap = (EVERGREEN_GRPH_RED_CROSSBAR(EVERGREEN_GRPH_RED_SEL_B) |
-			   EVERGREEN_GRPH_BLUE_CROSSBAR(EVERGREEN_GRPH_BLUE_SEL_R));
-#ifdef __BIG_ENDIAN
-		fb_swap |= EVERGREEN_GRPH_ENDIAN_SWAP(EVERGREEN_GRPH_ENDIAN_8IN32);
-#endif
-		break;
 	default:
-		DRM_ERROR("Unsupported screen format %p4cc\n",
-			  &target_fb->format->format);
+		DRM_ERROR("Unsupported screen format %s\n",
+		          drm_get_format_name(target_fb->format->format, &format_name));
 		return -EINVAL;
 	}
 
@@ -1438,7 +1441,8 @@ static int dce4_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(EVERGREEN_MASTER_UPDATE_MODE + radeon_crtc->crtc_offset, 0);
 
 	if (!atomic && fb && fb != crtc->primary->fb) {
-		rbo = gem_to_radeon_bo(fb->obj[0]);
+		radeon_fb = to_radeon_framebuffer(fb);
+		rbo = gem_to_radeon_bo(radeon_fb->obj);
 		r = radeon_bo_reserve(rbo, false);
 		if (unlikely(r != 0))
 			return r;
@@ -1459,6 +1463,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	struct radeon_crtc *radeon_crtc = to_radeon_crtc(crtc);
 	struct drm_device *dev = crtc->dev;
 	struct radeon_device *rdev = dev->dev_private;
+	struct radeon_framebuffer *radeon_fb;
 	struct drm_gem_object *obj;
 	struct radeon_bo *rbo;
 	struct drm_framebuffer *target_fb;
@@ -1468,6 +1473,7 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	u32 viewport_w, viewport_h;
 	int r;
 	bool bypass_lut = false;
+	struct drm_format_name_buf format_name;
 
 	/* no fb bound */
 	if (!atomic && !crtc->primary->fb) {
@@ -1475,12 +1481,16 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 		return 0;
 	}
 
-	if (atomic)
+	if (atomic) {
+		radeon_fb = to_radeon_framebuffer(fb);
 		target_fb = fb;
-	else
+	}
+	else {
+		radeon_fb = to_radeon_framebuffer(crtc->primary->fb);
 		target_fb = crtc->primary->fb;
+	}
 
-	obj = target_fb->obj[0];
+	obj = radeon_fb->obj;
 	rbo = gem_to_radeon_bo(obj);
 	r = radeon_bo_reserve(rbo, false);
 	if (unlikely(r != 0))
@@ -1552,24 +1562,9 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 		/* Greater 8 bpc fb needs to bypass hw-lut to retain precision */
 		bypass_lut = true;
 		break;
-	case DRM_FORMAT_XBGR8888:
-	case DRM_FORMAT_ABGR8888:
-		fb_format =
-		    AVIVO_D1GRPH_CONTROL_DEPTH_32BPP |
-		    AVIVO_D1GRPH_CONTROL_32BPP_ARGB8888;
-		if (rdev->family >= CHIP_R600)
-			fb_swap =
-			    (R600_D1GRPH_RED_CROSSBAR(R600_D1GRPH_RED_SEL_B) |
-			     R600_D1GRPH_BLUE_CROSSBAR(R600_D1GRPH_BLUE_SEL_R));
-		else /* DCE1 (R5xx) */
-			fb_format |= AVIVO_D1GRPH_SWAP_RB;
-#ifdef __BIG_ENDIAN
-		fb_swap |= R600_D1GRPH_SWAP_ENDIAN_32BIT;
-#endif
-		break;
 	default:
-		DRM_ERROR("Unsupported screen format %p4cc\n",
-			  &target_fb->format->format);
+		DRM_ERROR("Unsupported screen format %s\n",
+		          drm_get_format_name(target_fb->format->format, &format_name));
 		return -EINVAL;
 	}
 
@@ -1646,7 +1641,8 @@ static int avivo_crtc_do_set_base(struct drm_crtc *crtc,
 	WREG32(AVIVO_D1MODE_MASTER_UPDATE_MODE + radeon_crtc->crtc_offset, 3);
 
 	if (!atomic && fb && fb != crtc->primary->fb) {
-		rbo = gem_to_radeon_bo(fb->obj[0]);
+		radeon_fb = to_radeon_framebuffer(fb);
+		rbo = gem_to_radeon_bo(radeon_fb->obj);
 		r = radeon_bo_reserve(rbo, false);
 		if (unlikely(r != 0))
 			return r;
@@ -1776,6 +1772,7 @@ static int radeon_get_shared_dp_ppll(struct drm_crtc *crtc)
  * radeon_get_shared_nondp_ppll - return the PPLL used by another non-DP crtc
  *
  * @crtc: drm crtc
+ * @encoder: drm encoder
  *
  * Returns the PPLL (Pixel PLL) used by another non-DP crtc/encoder which can
  * be shared (i.e., same clock).
@@ -2152,9 +2149,11 @@ static void atombios_crtc_disable(struct drm_crtc *crtc)
 	atombios_crtc_dpms(crtc, DRM_MODE_DPMS_OFF);
 	if (crtc->primary->fb) {
 		int r;
+		struct radeon_framebuffer *radeon_fb;
 		struct radeon_bo *rbo;
 
-		rbo = gem_to_radeon_bo(crtc->primary->fb->obj[0]);
+		radeon_fb = to_radeon_framebuffer(crtc->primary->fb);
+		rbo = gem_to_radeon_bo(radeon_fb->obj);
 		r = radeon_bo_reserve(rbo, false);
 		if (unlikely(r))
 			DRM_ERROR("failed to reserve rbo before unpin\n");
@@ -2219,7 +2218,6 @@ static const struct drm_crtc_helper_funcs atombios_helper_funcs = {
 	.prepare = atombios_crtc_prepare,
 	.commit = atombios_crtc_commit,
 	.disable = atombios_crtc_disable,
-	.get_scanout_position = radeon_get_crtc_scanout_position,
 };
 
 void radeon_atombios_init_crtc(struct drm_device *dev,

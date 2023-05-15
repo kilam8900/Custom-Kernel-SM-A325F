@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2001 Dave Engebretsen, IBM Corporation
  * Copyright (C) 2003 Anton Blanchard <anton@au.ibm.com>, IBM
@@ -6,6 +5,20 @@
  * RTAS specific routines for PCI.
  *
  * Based on code from pci.c, chrp_pci.c and pSeries_pci.c
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/kernel.h>
@@ -13,12 +26,11 @@
 #include <linux/pci.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/pgtable.h>
-#include <linux/of_address.h>
-#include <linux/of_fdt.h>
 
 #include <asm/io.h>
+#include <asm/pgtable.h>
 #include <asm/irq.h>
+#include <asm/prom.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
 #include <asm/iommu.h>
@@ -191,10 +203,10 @@ static void python_countermeasures(struct device_node *dev)
 
 void __init init_pci_config_tokens(void)
 {
-	read_pci_config = rtas_function_token(RTAS_FN_READ_PCI_CONFIG);
-	write_pci_config = rtas_function_token(RTAS_FN_WRITE_PCI_CONFIG);
-	ibm_read_pci_config = rtas_function_token(RTAS_FN_IBM_READ_PCI_CONFIG);
-	ibm_write_pci_config = rtas_function_token(RTAS_FN_IBM_WRITE_PCI_CONFIG);
+	read_pci_config = rtas_token("read-pci-config");
+	write_pci_config = rtas_token("write-pci-config");
+	ibm_read_pci_config = rtas_token("ibm,read-pci-config");
+	ibm_write_pci_config = rtas_token("ibm,write-pci-config");
 }
 
 unsigned long get_phb_buid(struct device_node *phb)

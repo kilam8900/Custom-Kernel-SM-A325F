@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * USB IBM C-It Video Camera driver
  *
@@ -11,6 +10,17 @@
  *
  * (C) Copyright 1999 Johannes Erdfelt
  * (C) Copyright 1999 Randy Dunlap
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -694,8 +704,7 @@ static int cit_read_reg(struct gspca_dev *gspca_dev, u16 index, int verbose)
 	}
 
 	if (verbose)
-		gspca_dbg(gspca_dev, D_PROBE, "Register %04x value: %02x\n",
-			  index, buf[0]);
+		PDEBUG(D_PROBE, "Register %04x value: %02x", index, buf[0]);
 
 	return 0;
 }
@@ -817,7 +826,7 @@ static void cit_model2_Packet1(struct gspca_dev *gspca_dev, u16 v1, u16 v2)
  * 00_d141_0124
  * 00_0096_0127
  * 00_fea8_0124
- */
+*/
 static void cit_model3_Packet1(struct gspca_dev *gspca_dev, u16 v1, u16 v2)
 {
 	cit_write_reg(gspca_dev, 0x0078, 0x012d);
@@ -1409,7 +1418,7 @@ static int cit_restart_stream(struct gspca_dev *gspca_dev)
 	case CIT_MODEL0:
 	case CIT_MODEL1:
 		cit_write_reg(gspca_dev, 0x0001, 0x0114);
-		fallthrough;
+		/* Fall through */
 	case CIT_MODEL2:
 	case CIT_MODEL4:
 		cit_write_reg(gspca_dev, 0x00c0, 0x010c); /* Go! */
@@ -1465,11 +1474,10 @@ static int cit_get_clock_div(struct gspca_dev *gspca_dev)
 			fps[clock_div - 1] * 3 / 2)
 		clock_div--;
 
-	gspca_dbg(gspca_dev, D_PROBE,
-		  "PacketSize: %d, res: %dx%d -> using clockdiv: %d (%d fps)\n",
-		  packet_size,
-		  gspca_dev->pixfmt.width, gspca_dev->pixfmt.height,
-		  clock_div, fps[clock_div]);
+	PDEBUG(D_PROBE,
+	       "PacketSize: %d, res: %dx%d -> using clockdiv: %d (%d fps)",
+	       packet_size, gspca_dev->pixfmt.width, gspca_dev->pixfmt.height,
+	       clock_div, fps[clock_div]);
 
 	return clock_div;
 }
@@ -2725,7 +2733,7 @@ static void sd_stop0(struct gspca_dev *gspca_dev)
 		break;
 	case CIT_MODEL2:
 		v4l2_ctrl_grab(sd->lighting, false);
-		fallthrough;
+		/* Fall through! */
 	case CIT_MODEL4:
 		cit_model2_Packet1(gspca_dev, 0x0030, 0x0004);
 
@@ -2873,17 +2881,17 @@ static u8 *cit_find_sof(struct gspca_dev *gspca_dev, u8 *data, int len)
 				sd->sof_read = 0;
 				if (data[i] == 0xff) {
 					if (i >= 4)
-						gspca_dbg(gspca_dev, D_FRAM,
-							  "header found at offset: %d: %02x %02x 00 %3ph\n\n",
-							  i - 1,
-							  data[i - 4],
-							  data[i - 3],
-							  &data[i]);
+						PDEBUG(D_FRAM,
+						       "header found at offset: %d: %02x %02x 00 %3ph\n",
+						       i - 1,
+						       data[i - 4],
+						       data[i - 3],
+						       &data[i]);
 					else
-						gspca_dbg(gspca_dev, D_FRAM,
-							  "header found at offset: %d: 00 %3ph\n\n",
-							  i - 1,
-							  &data[i]);
+						PDEBUG(D_FRAM,
+						       "header found at offset: %d: 00 %3ph\n",
+						       i - 1,
+						       &data[i]);
 					return data + i + (sd->sof_len - 1);
 				}
 				break;

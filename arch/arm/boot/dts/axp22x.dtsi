@@ -52,25 +52,14 @@
 	interrupt-controller;
 	#interrupt-cells = <1>;
 
-	ac_power_supply: ac-power {
+	ac_power_supply: ac-power-supply {
 		compatible = "x-powers,axp221-ac-power-supply";
 		status = "disabled";
 	};
 
-	axp_adc: adc {
-		compatible = "x-powers,axp221-adc";
-		#io-channel-cells = <1>;
-	};
-
-	battery_power_supply: battery-power {
+	battery_power_supply: battery-power-supply {
 		compatible = "x-powers,axp221-battery-power-supply";
 		status = "disabled";
-	};
-
-	axp_gpio: gpio {
-		compatible = "x-powers,axp221-gpio";
-		gpio-controller;
-		#gpio-cells = <2>;
 	};
 
 	regulators {
@@ -169,7 +158,7 @@
 		};
 	};
 
-	usb_power_supply: usb-power {
+	usb_power_supply: usb_power_supply {
 		compatible = "x-powers,axp221-usb-power-supply";
 		status = "disabled";
 	};

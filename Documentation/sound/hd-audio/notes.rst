@@ -42,7 +42,7 @@ If you are interested in the deep debugging of HD-audio, read the
 HD-audio specification at first.  The specification is found on
 Intel's web page, for example:
 
-* https://www.intel.com/standards/hdaudio/
+* http://www.intel.com/standards/hdaudio/
 
 
 HD-Audio Controller
@@ -66,11 +66,6 @@ by comparing both LPIB and position-buffer values.
 ``position_fix=4`` is another combination available for all controllers,
 and uses LPIB for the playback and the position-buffer for the capture
 streams.
-``position_fix=5`` is specific to Intel platforms, so far, for Skylake
-and onward.  It applies the delay calculation for the precise position
-reporting.
-``position_fix=6`` is to correct the position with the fixed FIFO
-size, mainly targeted for the recent AMD controllers.
 0 is the default value for all other
 controllers, the automatic check and fallback to LPIB as described in
 the above.  If you get a problem of repeated sounds, this option might
@@ -197,7 +192,7 @@ preset model instead of PCI (and codec-) SSID look-up.
 What ``model`` option values are available depends on the codec chip.
 Check your codec chip from the codec proc file (see "Codec Proc-File"
 section below).  It will show the vendor/product name of your codec
-chip.  Then, see Documentation/sound/hd-audio/models.rst file,
+chip.  Then, see Documentation/sound/HD-Audio-Models.rst file,
 the section of HD-audio driver.  You can find a list of codecs
 and ``model`` options belonging to each codec.  For example, for Realtek
 ALC262 codec chip, pass ``model=ultra`` for devices that are compatible
@@ -214,17 +209,6 @@ There are a few special model option values:
   parser are skipped.
 * when ``generic`` is passed, the codec-specific parser is skipped and
   only the generic parser is used.
-
-A new style for the model option that was introduced since 5.15 kernel
-is to pass the PCI or codec SSID in the form of ``model=XXXX:YYYY``
-where XXXX and YYYY are the sub-vendor and sub-device IDs in hex
-numbers, respectively.  This is a kind of aliasing to another device;
-when this form is given, the driver will refer to that SSID as a
-reference to the quirk table.  It'd be useful especially when the
-target quirk isn't listed in the model table.  For example, passing
-model=103c:8862 will apply the quirk for HP ProBook 445 G8 (which
-isn't found in the model table as of writing) as long as the device is
-handled equivalently by the same driver.
 
 
 Speaker and Headphone Output
@@ -500,7 +484,7 @@ add_jack_modes (bool)
     change the headphone amp and mic bias VREF capabilities
 power_save_node (bool)
     advanced power management for each widget, controlling the power
-    state (D0/D3) of each widget node depending on the actual pin and
+    sate (D0/D3) of each widget node depending on the actual pin and
     stream states
 power_down_unused (bool)
     power down the unused widgets, a subset of power_save_node, and
@@ -651,14 +635,14 @@ via power-saving behavior.
 Enabling all tracepoints can be done like
 ::
 
-    # echo 1 > /sys/kernel/tracing/events/hda/enable
+    # echo 1 > /sys/kernel/debug/tracing/events/hda/enable
 
 then after some commands, you can traces from
-/sys/kernel/tracing/trace file.  For example, when you want to
+/sys/kernel/debug/tracing/trace file.  For example, when you want to
 trace what codec command is sent, enable the tracepoint like:
 ::
 
-    # cat /sys/kernel/tracing/trace
+    # cat /sys/kernel/debug/tracing/trace
     # tracer: nop
     #
     #       TASK-PID    CPU#    TIMESTAMP  FUNCTION
@@ -739,7 +723,7 @@ version can be found on git repository:
 
 The script can be fetched directly from the following URL, too:
 
-* https://www.alsa-project.org/alsa-info.sh
+* http://www.alsa-project.org/alsa-info.sh
 
 Run this script as root, and it will gather the important information
 such as the module lists, module parameters, proc file contents
@@ -829,7 +813,7 @@ proc-compatible output.
 
 The hda-analyzer:
 
-* https://git.alsa-project.org/?p=alsa.git;a=tree;f=hda-analyzer
+* http://git.alsa-project.org/?p=alsa.git;a=tree;f=hda-analyzer
 
 is a part of alsa.git repository in alsa-project.org:
 

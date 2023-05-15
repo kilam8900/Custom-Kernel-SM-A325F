@@ -14,7 +14,6 @@
 
 #include "misc.h"
 #include "error.h"
-#include "pgtable.h"
 #include "../string.h"
 #include "../voffset.h"
 #include <asm/bootparam_utils.h>
@@ -28,37 +27,31 @@
 
 /* Macros used by the included decompressor code below. */
 #define STATIC		static
-/* Define an externally visible malloc()/free(). */
-#define MALLOC_VISIBLE
-#include <linux/decompress/mm.h>
 
 /*
- * Provide definitions of memzero and memmove as some of the decompressors will
- * try to define their own functions if these are not defined as macros.
+ * Use normal definitions of mem*() from string.c. There are already
+ * included header files which expect a definition of memset() and by
+ * the time we define memset macro, it is too late.
  */
+#undef memcpy
+#undef memset
 #define memzero(s, n)	memset((s), 0, (n))
-#ifndef memmove
 #define memmove		memmove
+
 /* Functions used by the included decompressor code below. */
 void *memmove(void *dest, const void *src, size_t n);
-#endif
 
 /*
  * This is set up by the setup-routine at boot-time
  */
 struct boot_params *boot_params;
 
-struct port_io_ops pio_ops;
-
 memptr free_mem_ptr;
 memptr free_mem_end_ptr;
 
 static char *vidmem;
 static int vidport;
-
-/* These might be accessed before .bss is cleared, so use .data instead. */
-static int lines __section(".data");
-static int cols __section(".data");
+static int lines, cols;
 
 #ifdef CONFIG_KERNEL_GZIP
 #include "../../../../lib/decompress_inflate.c"
@@ -82,10 +75,6 @@ static int cols __section(".data");
 
 #ifdef CONFIG_KERNEL_LZ4
 #include "../../../../lib/decompress_unlz4.c"
-#endif
-
-#ifdef CONFIG_KERNEL_ZSTD
-#include "../../../../lib/decompress_unzstd.c"
 #endif
 /*
  * NOTE: When adding a new decompressor, please update the analysis in
@@ -181,7 +170,17 @@ void __puthex(unsigned long value)
 	}
 }
 
-#ifdef CONFIG_X86_NEED_RELOCS
+static bool l5_supported(void)
+{
+	/* Check if leaf 7 is supported. */
+	if (native_cpuid_eax(0) < 7)
+		return 0;
+
+	/* Check if la57 is supported. */
+	return native_cpuid_ecx(7) & (1 << (X86_FEATURE_LA57 & 31));
+}
+
+#if CONFIG_X86_NEED_RELOCS
 static void handle_relocations(void *output, unsigned long output_len,
 			       unsigned long virt_addr)
 {
@@ -277,7 +276,7 @@ static inline void handle_relocations(void *output, unsigned long output_len,
 { }
 #endif
 
-static size_t parse_elf(void *output)
+static void parse_elf(void *output)
 {
 #ifdef CONFIG_X86_64
 	Elf64_Ehdr ehdr;
@@ -293,8 +292,10 @@ static size_t parse_elf(void *output)
 	if (ehdr.e_ident[EI_MAG0] != ELFMAG0 ||
 	   ehdr.e_ident[EI_MAG1] != ELFMAG1 ||
 	   ehdr.e_ident[EI_MAG2] != ELFMAG2 ||
-	   ehdr.e_ident[EI_MAG3] != ELFMAG3)
+	   ehdr.e_ident[EI_MAG3] != ELFMAG3) {
 		error("Kernel is not a valid ELF file");
+		return;
+	}
 
 	debug_putstr("Parsing ELF... ");
 
@@ -326,8 +327,6 @@ static size_t parse_elf(void *output)
 	}
 
 	free(phdrs);
-
-	return ehdr.e_entry - LOAD_PHYSICAL_ADDR;
 }
 
 /*
@@ -355,8 +354,6 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 {
 	const unsigned long kernel_total_size = VO__end - VO__text;
 	unsigned long virt_addr = LOAD_PHYSICAL_ADDR;
-	unsigned long needed_size;
-	size_t entry_offset;
 
 	/* Retain x86 boot parameters pointer passed from startup_32/64. */
 	boot_params = rmode;
@@ -377,45 +374,17 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	lines = boot_params->screen_info.orig_video_lines;
 	cols = boot_params->screen_info.orig_video_cols;
 
-	init_default_io_ops();
-
-	/*
-	 * Detect TDX guest environment.
-	 *
-	 * It has to be done before console_init() in order to use
-	 * paravirtualized port I/O operations if needed.
-	 */
-	early_tdx_detect();
-
 	console_init();
-
-	/*
-	 * Save RSDP address for later use. Have this after console_init()
-	 * so that early debugging output from the RSDP parsing code can be
-	 * collected.
-	 */
-	boot_params->acpi_rsdp_addr = get_rsdp_addr();
-
 	debug_putstr("early console in extract_kernel\n");
+
+	if (IS_ENABLED(CONFIG_X86_5LEVEL) && !l5_supported()) {
+		error("This linux kernel as configured requires 5-level paging\n"
+			"This CPU does not support the required 'cr4.la57' feature\n"
+			"Unable to boot - please use a kernel appropriate for your CPU\n");
+	}
 
 	free_mem_ptr     = heap;	/* Heap */
 	free_mem_end_ptr = heap + BOOT_HEAP_SIZE;
-
-	/*
-	 * The memory hole needed for the kernel is the larger of either
-	 * the entire decompressed kernel plus relocation table, or the
-	 * entire decompressed kernel plus .bss and .brk sections.
-	 *
-	 * On X86_64, the memory is mapped with PMD pages. Round the
-	 * size up so that the full extent of PMD pages mapped is
-	 * included in the check against the valid memory table
-	 * entries. This ensures the full mapped area is usable RAM
-	 * and doesn't include any reserved areas.
-	 */
-	needed_size = max(output_len, kernel_total_size);
-#ifdef CONFIG_X86_64
-	needed_size = ALIGN(needed_size, MIN_KERNEL_ALIGN);
-#endif
 
 	/* Report initial kernel position details. */
 	debug_putaddr(input_data);
@@ -423,16 +392,15 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	debug_putaddr(output);
 	debug_putaddr(output_len);
 	debug_putaddr(kernel_total_size);
-	debug_putaddr(needed_size);
 
-#ifdef CONFIG_X86_64
-	/* Report address of 32-bit trampoline */
-	debug_putaddr(trampoline_32bit);
-#endif
-
+	/*
+	 * The memory hole needed for the kernel is the larger of either
+	 * the entire decompressed kernel plus relocation table, or the
+	 * entire decompressed kernel plus .bss and .brk sections.
+	 */
 	choose_random_location((unsigned long)input_data, input_len,
 				(unsigned long *)&output,
-				needed_size,
+				max(output_len, kernel_total_size),
 				&virt_addr);
 
 	/* Validate memory location choices. */
@@ -450,6 +418,8 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 		error("Destination address too large");
 #endif
 #ifndef CONFIG_RELOCATABLE
+	if ((unsigned long)output != LOAD_PHYSICAL_ADDR)
+		error("Destination address does not match LOAD_PHYSICAL_ADDR");
 	if (virt_addr != LOAD_PHYSICAL_ADDR)
 		error("Destination virtual address changed when not relocatable");
 #endif
@@ -457,17 +427,10 @@ asmlinkage __visible void *extract_kernel(void *rmode, memptr heap,
 	debug_putstr("\nDecompressing Linux... ");
 	__decompress(input_data, input_len, NULL, NULL, output, output_len,
 			NULL, error);
-	entry_offset = parse_elf(output);
+	parse_elf(output);
 	handle_relocations(output, output_len, virt_addr);
-
-	debug_putstr("done.\nBooting the kernel (entry_offset: 0x");
-	debug_puthex(entry_offset);
-	debug_putstr(").\n");
-
-	/* Disable exception handling before booting the kernel */
-	cleanup_exception_handling();
-
-	return output + entry_offset;
+	debug_putstr("done.\nBooting the kernel.\n");
+	return output;
 }
 
 void fortify_panic(const char *name)

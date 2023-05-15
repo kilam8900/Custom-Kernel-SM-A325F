@@ -126,6 +126,11 @@ struct clock_event_device {
 	int			rating;
 	int			irq;
 	int			bound_on;
+	/*
+	 * MTK PATCH: indicate target cpu which will be waken by dynamic irq
+	 * affinity mechanism.
+	 */
+	int			irq_affinity_on;
 	const struct cpumask	*cpumask;
 	struct list_head	list;
 	struct module		*owner;
@@ -211,7 +216,7 @@ extern int tick_receive_broadcast(void);
 extern void tick_setup_hrtimer_broadcast(void);
 extern int tick_check_broadcast_expired(void);
 # else
-static __always_inline int tick_check_broadcast_expired(void) { return 0; }
+static inline int tick_check_broadcast_expired(void) { return 0; }
 static inline void tick_setup_hrtimer_broadcast(void) { }
 # endif
 
@@ -219,7 +224,7 @@ static inline void tick_setup_hrtimer_broadcast(void) { }
 
 static inline void clockevents_suspend(void) { }
 static inline void clockevents_resume(void) { }
-static __always_inline int tick_check_broadcast_expired(void) { return 0; }
+static inline int tick_check_broadcast_expired(void) { return 0; }
 static inline void tick_setup_hrtimer_broadcast(void) { }
 
 #endif /* !CONFIG_GENERIC_CLOCKEVENTS */

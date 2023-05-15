@@ -1,9 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * kernel/power/main.c - PM subsystem core functionality.
  *
  * Copyright (c) 2003 Patrick Mochel
  * Copyright (c) 2003 Open Source Development Lab
+ *
+ * This file is released under the GPLv2
+ *
  */
 
 #include <linux/export.h>
@@ -12,60 +14,20 @@
 #include <linux/pm-trace.h>
 #include <linux/workqueue.h>
 #include <linux/debugfs.h>
+#include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-#include <linux/suspend.h>
-#include <linux/syscalls.h>
-#include <linux/pm_runtime.h>
-
+#ifdef CONFIG_SEC_PM
+#include <linux/fb.h>
+#endif /* CONFIG_SEC_PM */
 #include "power.h"
 
+DEFINE_MUTEX(pm_mutex);
+
+#ifdef CONFIG_SEC_PM
+static struct delayed_work ws_work;
+#endif
+
 #ifdef CONFIG_PM_SLEEP
-
-unsigned int lock_system_sleep(void)
-{
-	unsigned int flags = current->flags;
-	current->flags |= PF_NOFREEZE;
-	mutex_lock(&system_transition_mutex);
-	return flags;
-}
-EXPORT_SYMBOL_GPL(lock_system_sleep);
-
-void unlock_system_sleep(unsigned int flags)
-{
-	/*
-	 * Don't use freezer_count() because we don't want the call to
-	 * try_to_freeze() here.
-	 *
-	 * Reason:
-	 * Fundamentally, we just don't need it, because freezing condition
-	 * doesn't come into effect until we release the
-	 * system_transition_mutex lock, since the freezer always works with
-	 * system_transition_mutex held.
-	 *
-	 * More importantly, in the case of hibernation,
-	 * unlock_system_sleep() gets called in snapshot_read() and
-	 * snapshot_write() when the freezing condition is still in effect.
-	 * Which means, if we use try_to_freeze() here, it would make them
-	 * enter the refrigerator, thus causing hibernation to lockup.
-	 */
-	if (!(flags & PF_NOFREEZE))
-		current->flags &= ~PF_NOFREEZE;
-	mutex_unlock(&system_transition_mutex);
-}
-EXPORT_SYMBOL_GPL(unlock_system_sleep);
-
-void ksys_sync_helper(void)
-{
-	ktime_t start;
-	long elapsed_msecs;
-
-	start = ktime_get();
-	ksys_sync();
-	elapsed_msecs = ktime_to_ms(ktime_sub(ktime_get(), start));
-	pr_info("Filesystems sync: %ld.%03ld seconds\n",
-		elapsed_msecs / MSEC_PER_SEC, elapsed_msecs % MSEC_PER_SEC);
-}
-EXPORT_SYMBOL_GPL(ksys_sync_helper);
 
 /* Routines for PM-transition notifications */
 
@@ -83,18 +45,18 @@ int unregister_pm_notifier(struct notifier_block *nb)
 }
 EXPORT_SYMBOL_GPL(unregister_pm_notifier);
 
-int pm_notifier_call_chain_robust(unsigned long val_up, unsigned long val_down)
+int __pm_notifier_call_chain(unsigned long val, int nr_to_call, int *nr_calls)
 {
 	int ret;
 
-	ret = blocking_notifier_call_chain_robust(&pm_chain_head, val_up, val_down, NULL);
+	ret = __blocking_notifier_call_chain(&pm_chain_head, val, NULL,
+						nr_to_call, nr_calls);
 
 	return notifier_to_errno(ret);
 }
-
 int pm_notifier_call_chain(unsigned long val)
 {
-	return blocking_notifier_call_chain(&pm_chain_head, val, NULL);
+	return __pm_notifier_call_chain(val, -1, NULL);
 }
 
 /* If set, devices may be suspended and resumed asynchronously. */
@@ -130,9 +92,7 @@ static ssize_t mem_sleep_show(struct kobject *kobj, struct kobj_attribute *attr,
 	char *s = buf;
 	suspend_state_t i;
 
-	for (i = PM_SUSPEND_MIN; i < PM_SUSPEND_MAX; i++) {
-		if (i >= PM_SUSPEND_MEM && cxl_mem_active())
-			continue;
+	for (i = PM_SUSPEND_MIN; i < PM_SUSPEND_MAX; i++)
 		if (mem_sleep_states[i]) {
 			const char *label = mem_sleep_states[i];
 
@@ -141,7 +101,6 @@ static ssize_t mem_sleep_show(struct kobject *kobj, struct kobj_attribute *attr,
 			else
 				s += sprintf(s, "%s ", label);
 		}
-	}
 
 	/* Convert the last space to a newline if needed. */
 	if (s != buf)
@@ -196,38 +155,6 @@ static ssize_t mem_sleep_store(struct kobject *kobj, struct kobj_attribute *attr
 }
 
 power_attr(mem_sleep);
-
-/*
- * sync_on_suspend: invoke ksys_sync_helper() before suspend.
- *
- * show() returns whether ksys_sync_helper() is invoked before suspend.
- * store() accepts 0 or 1.  0 disables ksys_sync_helper() and 1 enables it.
- */
-bool sync_on_suspend_enabled = !IS_ENABLED(CONFIG_SUSPEND_SKIP_SYNC);
-
-static ssize_t sync_on_suspend_show(struct kobject *kobj,
-				   struct kobj_attribute *attr, char *buf)
-{
-	return sprintf(buf, "%d\n", sync_on_suspend_enabled);
-}
-
-static ssize_t sync_on_suspend_store(struct kobject *kobj,
-				    struct kobj_attribute *attr,
-				    const char *buf, size_t n)
-{
-	unsigned long val;
-
-	if (kstrtoul(buf, 10, &val))
-		return -EINVAL;
-
-	if (val > 1)
-		return -EINVAL;
-
-	sync_on_suspend_enabled = !!val;
-	return n;
-}
-
-power_attr(sync_on_suspend);
 #endif /* CONFIG_SUSPEND */
 
 #ifdef CONFIG_PM_SLEEP_DEBUG
@@ -266,17 +193,16 @@ static ssize_t pm_test_show(struct kobject *kobj, struct kobj_attribute *attr,
 static ssize_t pm_test_store(struct kobject *kobj, struct kobj_attribute *attr,
 				const char *buf, size_t n)
 {
-	unsigned int sleep_flags;
 	const char * const *s;
-	int error = -EINVAL;
 	int level;
 	char *p;
 	int len;
+	int error = -EINVAL;
 
 	p = memchr(buf, '\n', n);
 	len = p ? p - buf : n;
 
-	sleep_flags = lock_system_sleep();
+	lock_system_sleep();
 
 	level = TEST_FIRST;
 	for (s = &pm_tests[level]; level <= TEST_MAX; s++, level++)
@@ -286,7 +212,7 @@ static ssize_t pm_test_store(struct kobject *kobj, struct kobj_attribute *attr,
 			break;
 		}
 
-	unlock_system_sleep(sleep_flags);
+	unlock_system_sleep();
 
 	return error ? error : n;
 }
@@ -394,12 +320,13 @@ static struct attribute *suspend_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group suspend_attr_group = {
+static struct attribute_group suspend_attr_group = {
 	.name = "suspend_stats",
 	.attrs = suspend_attrs,
 };
 
-#ifdef CONFIG_DEBUG_FS
+//#ifdef CONFIG_DEBUG_FS
+#if 1
 static int suspend_stats_show(struct seq_file *s, void *unused)
 {
 	int i, index, last_dev, last_errno, last_step;
@@ -455,12 +382,24 @@ static int suspend_stats_show(struct seq_file *s, void *unused)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(suspend_stats);
+
+static int suspend_stats_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, suspend_stats_show, NULL);
+}
+
+static const struct file_operations suspend_stats_operations = {
+	.open           = suspend_stats_open,
+	.read           = seq_read,
+	.llseek         = seq_lseek,
+	.release        = single_release,
+};
 
 static int __init pm_debugfs_init(void)
 {
 	debugfs_create_file("suspend_stats", S_IFREG | S_IRUGO,
-			NULL, NULL, &suspend_stats_fops);
+			NULL, NULL, &suspend_stats_operations);
+	proc_create("suspend_stats", 0644, NULL, &suspend_stats_operations);
 	return 0;
 }
 
@@ -511,10 +450,7 @@ static ssize_t pm_wakeup_irq_show(struct kobject *kobj,
 					struct kobj_attribute *attr,
 					char *buf)
 {
-	if (!pm_wakeup_irq())
-		return -ENODATA;
-
-	return sprintf(buf, "%u\n", pm_wakeup_irq());
+	return pm_wakeup_irq ? sprintf(buf, "%u\n", pm_wakeup_irq) : -ENODATA;
 }
 
 power_attr_ro(pm_wakeup_irq);
@@ -545,12 +481,34 @@ static ssize_t pm_debug_messages_store(struct kobject *kobj,
 
 power_attr(pm_debug_messages);
 
-static int __init pm_debug_messages_setup(char *str)
+/**
+ * __pm_pr_dbg - Print a suspend debug message to the kernel log.
+ * @defer: Whether or not to use printk_deferred() to print the message.
+ * @fmt: Message format.
+ *
+ * The message will be emitted if enabled through the pm_debug_messages
+ * sysfs attribute.
+ */
+void __pm_pr_dbg(bool defer, const char *fmt, ...)
 {
-	pm_debug_messages_on = true;
-	return 1;
+	struct va_format vaf;
+	va_list args;
+
+	if (!pm_debug_messages_on)
+		return;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	if (defer)
+		printk_deferred(KERN_DEBUG "PM: %pV", &vaf);
+	else
+		printk(KERN_DEBUG "PM: %pV", &vaf);
+
+	va_end(args);
 }
-__setup("pm_debug_messages", pm_debug_messages_setup);
 
 #else /* !CONFIG_PM_SLEEP_DEBUG */
 static inline void pm_print_times_init(void) {}
@@ -558,13 +516,12 @@ static inline void pm_print_times_init(void) {}
 
 struct kobject *power_kobj;
 
-/*
+/**
  * state - control system sleep states.
  *
  * show() returns available sleep state labels, which may be "mem", "standby",
- * "freeze" and "disk" (hibernation).
- * See Documentation/admin-guide/pm/sleep-states.rst for a description of
- * what they mean.
+ * "freeze" and "disk" (hibernation).  See Documentation/power/states.txt for a
+ * description of what they mean.
  *
  * store() accepts one of those strings, translates it into the proper
  * enumerated value, and initiates a suspend transition.
@@ -601,7 +558,7 @@ static suspend_state_t decode_state(const char *buf, size_t n)
 	len = p ? p - buf : n;
 
 	/* Check hibernation first. */
-	if (len == 4 && str_has_prefix(buf, "disk"))
+	if (len == 4 && !strncmp(buf, "disk", len))
 		return PM_SUSPEND_MAX;
 
 #ifdef CONFIG_SUSPEND
@@ -864,6 +821,47 @@ power_attr(pm_freeze_timeout);
 
 #endif	/* CONFIG_FREEZER*/
 
+#ifdef CONFIG_FOTA_LIMIT
+static char fota_limit_str[] =
+#ifdef CONFIG_MACH_MT6877
+	"[START]\n"
+	"/sys/power/cpufreq_max_limit 1430000\n"
+	"[STOP]\n"
+	"/sys/power/cpufreq_max_limit -1\n"
+	"[END]\n";
+#elif defined(CONFIG_MACH_MT6739)
+	"[START]\n"
+	"/sys/power/cpufreq_max_limit 1495000\n"
+	"[STOP]\n"
+	"/sys/power/cpufreq_max_limit -1\n"
+	"[END]\n";
+#elif defined(CONFIG_MACH_MT6768)
+    "[START]\n"
+    "/sys/power/cpufreq_max_limit 1443000\n"
+    "[STOP]\n"
+    "/sys/power/cpufreq_max_limit -1\n"
+    "[END]\n";
+#else
+	"[NOT_SUPPORT]\n";
+#endif
+
+static ssize_t fota_limit_show(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					char *buf)
+{
+	pr_info("%s\n", __func__);
+	return sprintf(buf, "%s", fota_limit_str);
+}
+
+static struct kobj_attribute fota_limit_attr = {
+	.attr	= {
+		.name = __stringify(fota_limit),
+		.mode = 0440,
+	},
+	.show	= fota_limit_show,
+};
+#endif /* CONFIG_FOTA_LIMIT */
+
 static struct attribute * g[] = {
 	&state_attr.attr,
 #ifdef CONFIG_PM_TRACE
@@ -875,7 +873,6 @@ static struct attribute * g[] = {
 	&wakeup_count_attr.attr,
 #ifdef CONFIG_SUSPEND
 	&mem_sleep_attr.attr,
-	&sync_on_suspend_attr.attr,
 #endif
 #ifdef CONFIG_PM_AUTOSLEEP
 	&autosleep_attr.attr,
@@ -894,6 +891,9 @@ static struct attribute * g[] = {
 #ifdef CONFIG_FREEZER
 	&pm_freeze_timeout_attr.attr,
 #endif
+#ifdef CONFIG_FOTA_LIMIT
+	&fota_limit_attr.attr,
+#endif /* CONFIG_FOTA_LIMIT */
 	NULL,
 };
 
@@ -919,6 +919,38 @@ static int __init pm_start_workqueue(void)
 	return pm_wq ? 0 : -ENOMEM;
 }
 
+#ifdef CONFIG_SEC_PM
+static void handle_ws_work(struct work_struct *work)
+{
+	wakeup_sources_stats_active();
+	schedule_delayed_work(&ws_work, msecs_to_jiffies(5000));
+}
+
+static int state_change_fb_notifier_callback(struct notifier_block *nb,
+				unsigned long event, void *data)
+{
+	struct fb_event *evdata = data;
+	int blank;
+
+	if (event != FB_EVENT_BLANK)
+		return 0;
+
+	blank = *(int *)evdata->data;
+
+	if (blank == FB_BLANK_UNBLANK) {
+		cancel_delayed_work_sync(&ws_work);
+	} else {
+		schedule_delayed_work(&ws_work, msecs_to_jiffies(5000));
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block fb_notifier = {
+	.notifier_call = state_change_fb_notifier_callback,
+};
+#endif /* CONFIG_SEC_PM */
+
 static int __init pm_init(void)
 {
 	int error = pm_start_workqueue();
@@ -934,6 +966,10 @@ static int __init pm_init(void)
 	if (error)
 		return error;
 	pm_print_times_init();
+#ifdef CONFIG_SEC_PM
+	fb_register_client(&fb_notifier);
+	INIT_DELAYED_WORK(&ws_work, handle_ws_work);
+#endif /* CONFIG_SEC_PM */	
 	return pm_autosleep_init();
 }
 

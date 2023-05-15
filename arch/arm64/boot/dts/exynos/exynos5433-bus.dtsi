@@ -1,12 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Samsung's Exynos5433 SoC Memory interface and AMBA bus device tree source
  *
  * Copyright (c) 2016 Samsung Electronics Co., Ltd.
  * Chanwoo Choi <cw00.choi@samsung.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
-/ {
+&soc {
 	bus_g2d_400: bus0 {
 		compatible = "samsung,exynos-bus";
 		clocks = <&cmu_top CLK_ACLK_G2D_400>;
@@ -87,7 +90,7 @@
 		status = "disabled";
 	};
 
-	bus_g2d_400_opp_table: opp-table-2 {
+	bus_g2d_400_opp_table: opp_table2 {
 		compatible = "operating-points-v2";
 		opp-shared;
 
@@ -117,7 +120,7 @@
 		};
 	};
 
-	bus_g2d_266_opp_table: opp-table-3 {
+	bus_g2d_266_opp_table: opp_table3 {
 		compatible = "operating-points-v2";
 
 		opp-267000000 {
@@ -137,7 +140,7 @@
 		};
 	};
 
-	bus_gscl_opp_table: opp-table-4 {
+	bus_gscl_opp_table: opp_table4 {
 		compatible = "operating-points-v2";
 
 		opp-333000000 {
@@ -151,7 +154,7 @@
 		};
 	};
 
-	bus_hevc_opp_table: opp-table-5 {
+	bus_hevc_opp_table: opp_table5 {
 		compatible = "operating-points-v2";
 		opp-shared;
 
@@ -175,7 +178,7 @@
 		};
 	};
 
-	bus_noc2_opp_table: opp-table-6 {
+	bus_noc2_opp_table: opp_table6 {
 		compatible = "operating-points-v2";
 
 		opp-400000000 {

@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * kvm guest debug support
  *
  * Copyright IBM Corp. 2014
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License (version 2 only)
+ * as published by the Free Software Foundation.
  *
  *    Author(s): David Hildenbrand <dahi@linux.vnet.ibm.com>
  */
@@ -153,7 +156,7 @@ void kvm_s390_patch_guest_per_regs(struct kvm_vcpu *vcpu)
 
 	if (guestdbg_sstep_enabled(vcpu)) {
 		/* disable timer (clock-comparator) interrupts */
-		vcpu->arch.sie_block->gcr[0] &= ~CR0_CLOCK_COMPARATOR_SUBMASK;
+		vcpu->arch.sie_block->gcr[0] &= ~0x800ul;
 		vcpu->arch.sie_block->gcr[9] |= PER_EVENT_IFETCH;
 		vcpu->arch.sie_block->gcr[10] = 0;
 		vcpu->arch.sie_block->gcr[11] = -1UL;
@@ -184,7 +187,7 @@ static int __import_wp_info(struct kvm_vcpu *vcpu,
 	if (wp_info->len < 0 || wp_info->len > MAX_WP_SIZE)
 		return -EINVAL;
 
-	wp_info->old_data = kmalloc(bp_data->len, GFP_KERNEL_ACCOUNT);
+	wp_info->old_data = kmalloc(bp_data->len, GFP_KERNEL);
 	if (!wp_info->old_data)
 		return -ENOMEM;
 	/* try to backup the original value */
@@ -234,7 +237,7 @@ int kvm_s390_import_bp_data(struct kvm_vcpu *vcpu,
 	if (nr_wp > 0) {
 		wp_info = kmalloc_array(nr_wp,
 					sizeof(*wp_info),
-					GFP_KERNEL_ACCOUNT);
+					GFP_KERNEL);
 		if (!wp_info) {
 			ret = -ENOMEM;
 			goto error;
@@ -243,7 +246,7 @@ int kvm_s390_import_bp_data(struct kvm_vcpu *vcpu,
 	if (nr_bp > 0) {
 		bp_info = kmalloc_array(nr_bp,
 					sizeof(*bp_info),
-					GFP_KERNEL_ACCOUNT);
+					GFP_KERNEL);
 		if (!bp_info) {
 			ret = -ENOMEM;
 			goto error;
@@ -349,7 +352,7 @@ static struct kvm_hw_wp_info_arch *any_wp_changed(struct kvm_vcpu *vcpu)
 		if (!wp_info || !wp_info->old_data || wp_info->len <= 0)
 			continue;
 
-		temp = kmalloc(wp_info->len, GFP_KERNEL_ACCOUNT);
+		temp = kmalloc(wp_info->len, GFP_KERNEL);
 		if (!temp)
 			continue;
 

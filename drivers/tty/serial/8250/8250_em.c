@@ -1,14 +1,25 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Renesas Emma Mobile 8250 driver
  *
  *  Copyright (C) 2012 Magnus Damm
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/serial_8250.h>
 #include <linux/serial_reg.h>
 #include <linux/platform_device.h>
@@ -39,7 +50,7 @@ static void serial8250_em_serial_out(struct uart_port *p, int offset, int value)
 		break;
 	case UART_IER: /* IER @ 0x04 */
 		value &= 0x0f; /* only 4 valid bits - not Xscale */
-		fallthrough;
+		/* fall-through */
 	case UART_DLL_EM: /* DLL @ 0x24 (+9) */
 	case UART_DLM_EM: /* DLM @ 0x28 (+9) */
 		writel(value, p->membase + (offset << 2));
@@ -78,18 +89,14 @@ static void serial8250_em_serial_dl_write(struct uart_8250_port *up, int value)
 
 static int serial8250_em_probe(struct platform_device *pdev)
 {
+	struct resource *regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	struct resource *irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	struct serial8250_em_priv *priv;
 	struct uart_8250_port up;
-	struct resource *regs;
-	int irq, ret;
+	int ret;
 
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
-
-	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!regs) {
-		dev_err(&pdev->dev, "missing registers\n");
+	if (!regs || !irq) {
+		dev_err(&pdev->dev, "missing registers or irq\n");
 		return -EINVAL;
 	}
 
@@ -105,9 +112,9 @@ static int serial8250_em_probe(struct platform_device *pdev)
 
 	memset(&up, 0, sizeof(up));
 	up.port.mapbase = regs->start;
-	up.port.irq = irq;
-	up.port.type = PORT_16750;
-	up.port.flags = UPF_FIXED_PORT | UPF_IOREMAP | UPF_FIXED_TYPE;
+	up.port.irq = irq->start;
+	up.port.type = PORT_UNKNOWN;
+	up.port.flags = UPF_BOOT_AUTOCONF | UPF_FIXED_PORT | UPF_IOREMAP;
 	up.port.dev = &pdev->dev;
 	up.port.private_data = priv;
 

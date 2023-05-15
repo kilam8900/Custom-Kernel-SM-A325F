@@ -1,14 +1,7 @@
-/* SPDX-License-Identifier: MIT */
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NVKM_I2C_AUX_H__
 #define __NVKM_I2C_AUX_H__
 #include "pad.h"
-
-static inline void
-nvkm_i2c_aux_autodpcd(struct nvkm_i2c *i2c, int aux, bool enable)
-{
-	if (i2c->func->aux_autodpcd)
-		i2c->func->aux_autodpcd(i2c, aux, false);
-}
 
 struct nvkm_i2c_aux_func {
 	bool address_only;

@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/arch/arm/mach-omap2/usb-tusb6010.c
  *
  * Copyright (C) 2006 Nokia Corporation
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #include <linux/err.h>
@@ -97,7 +100,7 @@ static int tusb_set_sync_mode(unsigned sysclk_ps)
 }
 
 /* tusb driver calls this when it changes the chip's clocking */
-static int tusb6010_platform_retime(unsigned is_refclk)
+int tusb6010_platform_retime(unsigned is_refclk)
 {
 	static const char	error[] =
 		KERN_ERR "tusb6010 %s retime error %d\n";
@@ -121,6 +124,7 @@ static int tusb6010_platform_retime(unsigned is_refclk)
 done:
 	return status;
 }
+EXPORT_SYMBOL_GPL(tusb6010_platform_retime);
 
 static struct resource tusb_resources[] = {
 	/* Order is significant!  The start/end fields
@@ -153,7 +157,8 @@ static struct platform_device tusb_device = {
 
 
 /* this may be called only from board-*.c setup code */
-int __init tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
+int __init
+tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 		unsigned ps_refclk, unsigned waitpin,
 		unsigned async, unsigned sync,
 		unsigned irq, unsigned dmachan)

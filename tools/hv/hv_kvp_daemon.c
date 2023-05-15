@@ -44,7 +44,7 @@
 
 /*
  * KVP protocol: The user mode component first registers with the
- * kernel component. Subsequently, the kernel component requests, data
+ * the kernel component. Subsequently, the kernel component requests, data
  * for the specified keys. In response to this message the user mode component
  * fills in the value corresponding to the specified key. We overload the
  * sequence field in the cn_msg header to define our KVP message types.
@@ -76,7 +76,7 @@ enum {
 	DNS
 };
 
-static int in_hand_shake;
+static int in_hand_shake = 1;
 
 static char *os_name = "";
 static char *os_major = "";
@@ -437,7 +437,7 @@ void kvp_get_os_info(void)
 
 	/*
 	 * Parse the /etc/os-release file if present:
-	 * https://www.freedesktop.org/software/systemd/man/os-release.html
+	 * http://www.freedesktop.org/software/systemd/man/os-release.html
 	 */
 	file = fopen("/etc/os-release", "r");
 	if (file != NULL) {
@@ -634,6 +634,64 @@ static char *kvp_if_name_to_mac(char *if_name)
 	return mac_addr;
 }
 
+
+/*
+ * Retrieve the interface name given tha MAC address.
+ */
+
+static char *kvp_mac_to_if_name(char *mac)
+{
+	DIR *dir;
+	struct dirent *entry;
+	FILE    *file;
+	char    *p, *x;
+	char    *if_name = NULL;
+	char    buf[256];
+	char dev_id[PATH_MAX];
+	unsigned int i;
+
+	dir = opendir(KVP_NET_DIR);
+	if (dir == NULL)
+		return NULL;
+
+	while ((entry = readdir(dir)) != NULL) {
+		/*
+		 * Set the state for the next pass.
+		 */
+		snprintf(dev_id, sizeof(dev_id), "%s%s/address", KVP_NET_DIR,
+			 entry->d_name);
+
+		file = fopen(dev_id, "r");
+		if (file == NULL)
+			continue;
+
+		p = fgets(buf, sizeof(buf), file);
+		if (p) {
+			x = strchr(p, '\n');
+			if (x)
+				*x = '\0';
+
+			for (i = 0; i < strlen(p); i++)
+				p[i] = toupper(p[i]);
+
+			if (!strcmp(p, mac)) {
+				/*
+				 * Found the MAC match; return the interface
+				 * name. The caller will free the memory.
+				 */
+				if_name = strdup(entry->d_name);
+				fclose(file);
+				break;
+			}
+		}
+		fclose(file);
+	}
+
+	closedir(dir);
+	return if_name;
+}
+
+
 static void kvp_process_ipconfig_file(char *cmd,
 					char *config_buf, unsigned int len,
 					int element_size, int offset)
@@ -700,7 +758,7 @@ static void kvp_get_ipconfig_info(char *if_name,
 
 
 	/*
-	 * Gather the DNS state.
+	 * Gather the DNS  state.
 	 * Since there is no standard way to get this information
 	 * across various distributions of interest; we just invoke
 	 * an external script that needs to be ported across distros
@@ -772,11 +830,11 @@ static int kvp_process_ip_address(void *addrp,
 	const char *str;
 
 	if (family == AF_INET) {
-		addr = addrp;
+		addr = (struct sockaddr_in *)addrp;
 		str = inet_ntop(family, &addr->sin_addr, tmp, 50);
 		addr_length = INET_ADDRSTRLEN;
 	} else {
-		addr6 = addrp;
+		addr6 = (struct sockaddr_in6 *)addrp;
 		str = inet_ntop(family, &addr6->sin6_addr.s6_addr, tmp, 50);
 		addr_length = INET6_ADDRSTRLEN;
 	}
@@ -939,70 +997,6 @@ getaddr_done:
 	return error;
 }
 
-/*
- * Retrieve the IP given the MAC address.
- */
-static int kvp_mac_to_ip(struct hv_kvp_ipaddr_value *kvp_ip_val)
-{
-	char *mac = (char *)kvp_ip_val->adapter_id;
-	DIR *dir;
-	struct dirent *entry;
-	FILE    *file;
-	char    *p, *x;
-	char    *if_name = NULL;
-	char    buf[256];
-	char dev_id[PATH_MAX];
-	unsigned int i;
-	int error = HV_E_FAIL;
-
-	dir = opendir(KVP_NET_DIR);
-	if (dir == NULL)
-		return HV_E_FAIL;
-
-	while ((entry = readdir(dir)) != NULL) {
-		/*
-		 * Set the state for the next pass.
-		 */
-		snprintf(dev_id, sizeof(dev_id), "%s%s/address", KVP_NET_DIR,
-			 entry->d_name);
-
-		file = fopen(dev_id, "r");
-		if (file == NULL)
-			continue;
-
-		p = fgets(buf, sizeof(buf), file);
-		fclose(file);
-		if (!p)
-			continue;
-
-		x = strchr(p, '\n');
-		if (x)
-			*x = '\0';
-
-		for (i = 0; i < strlen(p); i++)
-			p[i] = toupper(p[i]);
-
-		if (strcmp(p, mac))
-			continue;
-
-		/*
-		 * Found the MAC match.
-		 * A NIC (e.g. VF) matching the MAC, but without IP, is skipped.
-		 */
-		if_name = entry->d_name;
-		if (!if_name)
-			continue;
-
-		error = kvp_get_ip_info(0, if_name, KVP_OP_GET_IP_INFO,
-					kvp_ip_val, MAX_IP_ADDR_SIZE * 2);
-
-		if (!error && strlen((char *)kvp_ip_val->ip_addr))
-			break;
-	}
-
-	closedir(dir);
-	return error;
-}
 
 static int expand_ipv6(char *addr, int type)
 {
@@ -1051,7 +1045,7 @@ static int parse_ip_val_buffer(char *in_buf, int *offset,
 	char *start;
 
 	/*
-	 * in_buf has sequence of characters that are separated by
+	 * in_buf has sequence of characters that are seperated by
 	 * the character ';'. The last sequence does not have the
 	 * terminating ";" character.
 	 */
@@ -1360,7 +1354,7 @@ void print_usage(char *argv[])
 
 int main(int argc, char *argv[])
 {
-	int kvp_fd = -1, len;
+	int kvp_fd, len;
 	int error;
 	struct pollfd pfd;
 	char    *p;
@@ -1400,6 +1394,14 @@ int main(int argc, char *argv[])
 	openlog("KVP", 0, LOG_USER);
 	syslog(LOG_INFO, "KVP starting; pid is:%d", getpid());
 
+	kvp_fd = open("/dev/vmbus/hv_kvp", O_RDWR | O_CLOEXEC);
+
+	if (kvp_fd < 0) {
+		syslog(LOG_ERR, "open /dev/vmbus/hv_kvp failed; error: %d %s",
+			errno, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+
 	/*
 	 * Retrieve OS release information.
 	 */
@@ -1412,18 +1414,6 @@ int main(int argc, char *argv[])
 
 	if (kvp_file_init()) {
 		syslog(LOG_ERR, "Failed to initialize the pools");
-		exit(EXIT_FAILURE);
-	}
-
-reopen_kvp_fd:
-	if (kvp_fd != -1)
-		close(kvp_fd);
-	in_hand_shake = 1;
-	kvp_fd = open("/dev/vmbus/hv_kvp", O_RDWR | O_CLOEXEC);
-
-	if (kvp_fd < 0) {
-		syslog(LOG_ERR, "open /dev/vmbus/hv_kvp failed; error: %d %s",
-		       errno, strerror(errno));
 		exit(EXIT_FAILURE);
 	}
 
@@ -1460,7 +1450,9 @@ reopen_kvp_fd:
 		if (len != sizeof(struct hv_kvp_msg)) {
 			syslog(LOG_ERR, "read failed; error:%d %s",
 			       errno, strerror(errno));
-			goto reopen_kvp_fd;
+
+			close(kvp_fd);
+			return EXIT_FAILURE;
 		}
 
 		/*
@@ -1493,12 +1485,26 @@ reopen_kvp_fd:
 		switch (op) {
 		case KVP_OP_GET_IP_INFO:
 			kvp_ip_val = &hv_msg->body.kvp_ip_val;
+			if_name =
+			kvp_mac_to_if_name((char *)kvp_ip_val->adapter_id);
 
-			error = kvp_mac_to_ip(kvp_ip_val);
+			if (if_name == NULL) {
+				/*
+				 * We could not map the mac address to an
+				 * interface name; return error.
+				 */
+				hv_msg->error = HV_E_FAIL;
+				break;
+			}
+			error = kvp_get_ip_info(
+						0, if_name, KVP_OP_GET_IP_INFO,
+						kvp_ip_val,
+						(MAX_IP_ADDR_SIZE * 2));
 
 			if (error)
 				hv_msg->error = error;
 
+			free(if_name);
 			break;
 
 		case KVP_OP_SET_IP_INFO:
@@ -1619,17 +1625,13 @@ reopen_kvp_fd:
 			break;
 		}
 
-		/*
-		 * Send the value back to the kernel. Note: the write() may
-		 * return an error due to hibernation; we can ignore the error
-		 * by resetting the dev file, i.e. closing and re-opening it.
-		 */
+		/* Send the value back to the kernel. */
 kvp_done:
 		len = write(kvp_fd, hv_msg, sizeof(struct hv_kvp_msg));
 		if (len != sizeof(struct hv_kvp_msg)) {
 			syslog(LOG_ERR, "write failed; error: %d %s", errno,
 			       strerror(errno));
-			goto reopen_kvp_fd;
+			exit(EXIT_FAILURE);
 		}
 	}
 

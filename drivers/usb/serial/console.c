@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * USB Serial Console driver
  *
  * Copyright (C) 2001 - 2002 Greg Kroah-Hartman (greg@kroah.com)
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License version
+ *	2 as published by the Free Software Foundation.
  *
  * Thanks to Randy Dunlap for the original version of this code.
  *
@@ -79,7 +82,7 @@ static int usb_console_setup(struct console *co, char *options)
 		if (*s)
 			doflow = (*s++ == 'r');
 	}
-
+	
 	/* Sane default */
 	if (baud == 0)
 		baud = 9600;
@@ -101,9 +104,7 @@ static int usb_console_setup(struct console *co, char *options)
 		cflag |= PARENB;
 		break;
 	}
-
-	if (doflow)
-		cflag |= CRTSCTS;
+	co->cflag = cflag;
 
 	/*
 	 * no need to check the index here: if the index is wrong, console
@@ -166,10 +167,9 @@ static int usb_console_setup(struct console *co, char *options)
 			serial->type->set_termios(tty, port, &dummy);
 
 			tty_port_tty_set(&port->port, NULL);
-			tty_save_termios(tty);
 			tty_kref_put(tty);
 		}
-		tty_port_set_initialized(&port->port, true);
+		tty_port_set_initialized(&port->port, 1);
 	}
 	/* Now that any required fake tty operations are completed restore
 	 * the tty port count */
@@ -189,8 +189,8 @@ static int usb_console_setup(struct console *co, char *options)
 	info->port = NULL;
 	usb_autopm_put_interface(serial->interface);
  error_get_interface:
-	mutex_unlock(&serial->disc_mutex);
 	usb_serial_put(serial);
+	mutex_unlock(&serial->disc_mutex);
 	return retval;
 }
 

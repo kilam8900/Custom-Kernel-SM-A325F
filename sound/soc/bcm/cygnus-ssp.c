@@ -1,5 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
-// Copyright (C) 2014-2015 Broadcom Corporation
+/*
+ * Copyright (C) 2014-2015 Broadcom Corporation
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation version 2.
+ *
+ * This program is distributed "as is" WITHOUT ANY WARRANTY of any
+ * kind, whether express or implied; without even the implied warranty
+ * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ */
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/init.h>
@@ -645,10 +655,23 @@ static int cygnus_ssp_hw_params(struct snd_pcm_substream *substream,
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		value = readl(aio->cygaud->audio + aio->regs.bf_sourcech_cfg);
 		value &= ~BIT(BF_SRC_CFGX_BUFFER_PAIR_ENABLE);
-		value &= ~BIT(BF_SRC_CFGX_SAMPLE_CH_MODE);
+		/* Configure channels as mono or stereo/TDM */
+		if (params_channels(params) == 1)
+			value |= BIT(BF_SRC_CFGX_SAMPLE_CH_MODE);
+		else
+			value &= ~BIT(BF_SRC_CFGX_SAMPLE_CH_MODE);
 		writel(value, aio->cygaud->audio + aio->regs.bf_sourcech_cfg);
 
 		switch (params_format(params)) {
+		case SNDRV_PCM_FORMAT_S8:
+			if (aio->port_type == PORT_SPDIF) {
+				dev_err(aio->cygaud->dev,
+				"SPDIF does not support 8bit format\n");
+				return -EINVAL;
+			}
+			bitres = 8;
+			break;
+
 		case SNDRV_PCM_FORMAT_S16_LE:
 			bitres = 16;
 			break;
@@ -819,7 +842,6 @@ int cygnus_ssp_set_custom_fsync_width(struct snd_soc_dai *cpu_dai, int len)
 		return -EINVAL;
 	}
 }
-EXPORT_SYMBOL_GPL(cygnus_ssp_set_custom_fsync_width);
 
 static int cygnus_ssp_set_fmt(struct snd_soc_dai *cpu_dai, unsigned int fmt)
 {
@@ -838,12 +860,12 @@ static int cygnus_ssp_set_fmt(struct snd_soc_dai *cpu_dai, unsigned int fmt)
 
 	ssp_newcfg = 0;
 
-	switch (fmt & SND_SOC_DAIFMT_CLOCK_PROVIDER_MASK) {
-	case SND_SOC_DAIFMT_BC_FC:
+	switch (fmt & SND_SOC_DAIFMT_MASTER_MASK) {
+	case SND_SOC_DAIFMT_CBM_CFM:
 		ssp_newcfg |= BIT(I2S_OUT_CFGX_SLAVE_MODE);
 		aio->is_slave = 1;
 		break;
-	case SND_SOC_DAIFMT_BP_FP:
+	case SND_SOC_DAIFMT_CBS_CFS:
 		ssp_newcfg &= ~BIT(I2S_OUT_CFGX_SLAVE_MODE);
 		aio->is_slave = 0;
 		break;
@@ -976,7 +998,7 @@ static int cygnus_set_dai_tdm_slot(struct snd_soc_dai *cpu_dai,
 
 	active_slots = hweight32(tx_mask);
 
-	if (active_slots > 16)
+	if ((active_slots < 0) || (active_slots > 16))
 		return -EINVAL;
 
 	/* Slot value must be even */
@@ -1042,12 +1064,9 @@ static int cygnus_set_dai_tdm_slot(struct snd_soc_dai *cpu_dai,
 }
 
 #ifdef CONFIG_PM_SLEEP
-static int __cygnus_ssp_suspend(struct snd_soc_dai *cpu_dai)
+static int cygnus_ssp_suspend(struct snd_soc_dai *cpu_dai)
 {
 	struct cygnus_aio_port *aio = cygnus_dai_get_portinfo(cpu_dai);
-
-	if (!snd_soc_dai_active(cpu_dai))
-		return 0;
 
 	if (!aio->is_slave) {
 		u32 val;
@@ -1071,24 +1090,10 @@ static int __cygnus_ssp_suspend(struct snd_soc_dai *cpu_dai)
 	return 0;
 }
 
-static int cygnus_ssp_suspend(struct snd_soc_component *component)
-{
-	struct snd_soc_dai *dai;
-	int ret = 0;
-
-	for_each_component_dais(component, dai)
-		ret |= __cygnus_ssp_suspend(dai);
-
-	return ret;
-}
-
-static int __cygnus_ssp_resume(struct snd_soc_dai *cpu_dai)
+static int cygnus_ssp_resume(struct snd_soc_dai *cpu_dai)
 {
 	struct cygnus_aio_port *aio = cygnus_dai_get_portinfo(cpu_dai);
 	int error;
-
-	if (!snd_soc_dai_active(cpu_dai))
-		return 0;
 
 	if (!aio->is_slave) {
 		if (aio->clk_trace.cap_clk_en) {
@@ -1116,18 +1121,6 @@ static int __cygnus_ssp_resume(struct snd_soc_dai *cpu_dai)
 
 	return 0;
 }
-
-static int cygnus_ssp_resume(struct snd_soc_component *component)
-{
-	struct snd_soc_dai *dai;
-	int ret = 0;
-
-	for_each_component_dais(component, dai)
-		ret |= __cygnus_ssp_resume(dai);
-
-	return ret;
-}
-
 #else
 #define cygnus_ssp_suspend NULL
 #define cygnus_ssp_resume  NULL
@@ -1143,21 +1136,15 @@ static const struct snd_soc_dai_ops cygnus_ssp_dai_ops = {
 	.set_tdm_slot	= cygnus_set_dai_tdm_slot,
 };
 
-static const struct snd_soc_dai_ops cygnus_spdif_dai_ops = {
-	.startup	= cygnus_ssp_startup,
-	.shutdown	= cygnus_ssp_shutdown,
-	.trigger	= cygnus_ssp_trigger,
-	.hw_params	= cygnus_ssp_hw_params,
-	.set_sysclk	= cygnus_ssp_set_sysclk,
-};
 
 #define INIT_CPU_DAI(num) { \
 	.name = "cygnus-ssp" #num, \
 	.playback = { \
-		.channels_min = 2, \
+		.channels_min = 1, \
 		.channels_max = 16, \
 		.rates = SNDRV_PCM_RATE_KNOT, \
-		.formats = SNDRV_PCM_FMTBIT_S16_LE | \
+		.formats = SNDRV_PCM_FMTBIT_S8 | \
+				SNDRV_PCM_FMTBIT_S16_LE | \
 				SNDRV_PCM_FMTBIT_S32_LE, \
 	}, \
 	.capture = { \
@@ -1165,9 +1152,11 @@ static const struct snd_soc_dai_ops cygnus_spdif_dai_ops = {
 		.channels_max = 16, \
 		.rates = SNDRV_PCM_RATE_KNOT, \
 		.formats =  SNDRV_PCM_FMTBIT_S16_LE | \
-				SNDRV_PCM_FMTBIT_S32_LE, \
+					SNDRV_PCM_FMTBIT_S32_LE, \
 	}, \
 	.ops = &cygnus_ssp_dai_ops, \
+	.suspend = cygnus_ssp_suspend, \
+	.resume = cygnus_ssp_resume, \
 }
 
 static const struct snd_soc_dai_driver cygnus_ssp_dai_info[] = {
@@ -1185,16 +1174,15 @@ static const struct snd_soc_dai_driver cygnus_spdif_dai_info = {
 		.formats = SNDRV_PCM_FMTBIT_S16_LE |
 			SNDRV_PCM_FMTBIT_S32_LE,
 	},
-	.ops = &cygnus_spdif_dai_ops,
+	.ops = &cygnus_ssp_dai_ops,
+	.suspend = cygnus_ssp_suspend,
+	.resume = cygnus_ssp_resume,
 };
 
 static struct snd_soc_dai_driver cygnus_ssp_dai[CYGNUS_MAX_PORTS];
 
 static const struct snd_soc_component_driver cygnus_ssp_component = {
-	.name			= "cygnus-audio",
-	.suspend		= cygnus_ssp_suspend,
-	.resume			= cygnus_ssp_resume,
-	.legacy_dai_naming	= 1,
+	.name		= "cygnus-audio",
 };
 
 /*
@@ -1299,8 +1287,9 @@ static int cygnus_ssp_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct device_node *child_node;
+	struct resource *res = pdev->resource;
 	struct cygnus_audio *cygaud;
-	int err;
+	int err = -EINVAL;
 	int node_count;
 	int active_port_count;
 
@@ -1310,11 +1299,13 @@ static int cygnus_ssp_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(dev, cygaud);
 
-	cygaud->audio = devm_platform_ioremap_resource_byname(pdev, "aud");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "aud");
+	cygaud->audio = devm_ioremap_resource(dev, res);
 	if (IS_ERR(cygaud->audio))
 		return PTR_ERR(cygaud->audio);
 
-	cygaud->i2s_in = devm_platform_ioremap_resource_byname(pdev, "i2s_in");
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "i2s_in");
+	cygaud->i2s_in = devm_ioremap_resource(dev, res);
 	if (IS_ERR(cygaud->i2s_in))
 		return PTR_ERR(cygaud->i2s_in);
 
@@ -1336,10 +1327,8 @@ static int cygnus_ssp_probe(struct platform_device *pdev)
 					&cygnus_ssp_dai[active_port_count]);
 
 		/* negative is err, 0 is active and good, 1 is disabled */
-		if (err < 0) {
-			of_node_put(child_node);
+		if (err < 0)
 			return err;
-		}
 		else if (!err) {
 			dev_dbg(dev, "Activating DAI: %s\n",
 				cygnus_ssp_dai[active_port_count].name);
@@ -1351,7 +1340,7 @@ static int cygnus_ssp_probe(struct platform_device *pdev)
 	cygaud->active_ports = 0;
 
 	dev_dbg(dev, "Registering %d DAIs\n", active_port_count);
-	err = devm_snd_soc_register_component(dev, &cygnus_ssp_component,
+	err = snd_soc_register_component(dev, &cygnus_ssp_component,
 				cygnus_ssp_dai, active_port_count);
 	if (err) {
 		dev_err(dev, "snd_soc_register_dai failed\n");
@@ -1359,27 +1348,35 @@ static int cygnus_ssp_probe(struct platform_device *pdev)
 	}
 
 	cygaud->irq_num = platform_get_irq(pdev, 0);
-	if (cygaud->irq_num <= 0)
-		return cygaud->irq_num;
+	if (cygaud->irq_num <= 0) {
+		dev_err(dev, "platform_get_irq failed\n");
+		err = cygaud->irq_num;
+		goto err_irq;
+	}
 
 	err = audio_clk_init(pdev, cygaud);
 	if (err) {
 		dev_err(dev, "audio clock initialization failed\n");
-		return err;
+		goto err_irq;
 	}
 
 	err = cygnus_soc_platform_register(dev, cygaud);
 	if (err) {
 		dev_err(dev, "platform reg error %d\n", err);
-		return err;
+		goto err_irq;
 	}
 
 	return 0;
+
+err_irq:
+	snd_soc_unregister_component(dev);
+	return err;
 }
 
 static int cygnus_ssp_remove(struct platform_device *pdev)
 {
 	cygnus_soc_platform_unregister(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
 
 	return 0;
 }

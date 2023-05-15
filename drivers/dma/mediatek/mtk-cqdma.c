@@ -133,6 +133,7 @@ struct mtk_cqdma_vchan {
  * @clk:                    The clock that device internal is using
  * @dma_requests:           The number of VCs the device supports to
  * @dma_channels:           The number of PCs the device supports to
+ * @dma_mask:               A mask for DMA capability
  * @vc:                     The pointer to all available VCs
  * @pc:                     The pointer to all the underlying PCs
  */
@@ -142,6 +143,7 @@ struct mtk_cqdma_device {
 
 	u32 dma_requests;
 	u32 dma_channels;
+	u32 dma_mask;
 	struct mtk_cqdma_vchan *vc;
 	struct mtk_cqdma_pchan **pc;
 };
@@ -356,9 +358,9 @@ static struct mtk_cqdma_vdesc
 	return ret;
 }
 
-static void mtk_cqdma_tasklet_cb(struct tasklet_struct *t)
+static void mtk_cqdma_tasklet_cb(unsigned long data)
 {
-	struct mtk_cqdma_pchan *pc = from_tasklet(pc, t, tasklet);
+	struct mtk_cqdma_pchan *pc = (struct mtk_cqdma_pchan *)data;
 	struct mtk_cqdma_vdesc *cvd = NULL;
 	unsigned long flags;
 
@@ -373,7 +375,7 @@ static void mtk_cqdma_tasklet_cb(struct tasklet_struct *t)
 
 		/*
 		 * free child CVD after completion.
-		 * the parent CVD would be freed with desc_free by user.
+		 * the parent CVD would be freeed with desc_free by user.
 		 */
 		if (cvd->parent != cvd)
 			kfree(cvd);
@@ -741,7 +743,10 @@ static void mtk_cqdma_hw_deinit(struct mtk_cqdma_device *cqdma)
 }
 
 static const struct of_device_id mtk_cqdma_match[] = {
+	{ .compatible = "mediatek,cqdma" },
 	{ .compatible = "mediatek,mt6765-cqdma" },
+	{ .compatible = "mediatek,mt6893-cqdma" },
+	{ .compatible = "mediatek,mt6877-cqdma" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mtk_cqdma_match);
@@ -751,6 +756,7 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 	struct mtk_cqdma_device *cqdma;
 	struct mtk_cqdma_vchan *vc;
 	struct dma_device *dd;
+	struct resource *res;
 	int err;
 	u32 i;
 
@@ -803,6 +809,21 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 		cqdma->dma_channels = MTK_CQDMA_NR_PCHANS;
 	}
 
+	if (pdev->dev.of_node)
+		err = of_property_read_u32(pdev->dev.of_node,
+					   "dma-channel-mask",
+					   &cqdma->dma_mask);
+	if (err) {
+		dev_warn(&pdev->dev,
+			 "Using 0 as missing dma-channel-mask property\n");
+		cqdma->dma_mask = 0;
+	}
+
+	if (dma_set_mask(&pdev->dev, DMA_BIT_MASK(cqdma->dma_mask))) {
+		dev_warn(&pdev->dev, "DMA set mask failed\n");
+		return -EINVAL;
+	}
+
 	cqdma->pc = devm_kcalloc(&pdev->dev, cqdma->dma_channels,
 				 sizeof(*cqdma->pc), GFP_KERNEL);
 	if (!cqdma->pc)
@@ -818,15 +839,23 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 		INIT_LIST_HEAD(&cqdma->pc[i]->queue);
 		spin_lock_init(&cqdma->pc[i]->lock);
 		refcount_set(&cqdma->pc[i]->refcnt, 0);
-		cqdma->pc[i]->base = devm_platform_ioremap_resource(pdev, i);
+		res = platform_get_resource(pdev, IORESOURCE_MEM, i);
+		if (!res) {
+			dev_err(&pdev->dev, "No mem resource for %s\n",
+				dev_name(&pdev->dev));
+			return -EINVAL;
+		}
+		cqdma->pc[i]->base = devm_ioremap_resource(&pdev->dev, res);
 		if (IS_ERR(cqdma->pc[i]->base))
 			return PTR_ERR(cqdma->pc[i]->base);
 
 		/* allocate IRQ resource */
-		err = platform_get_irq(pdev, i);
-		if (err < 0)
-			return err;
-		cqdma->pc[i]->irq = err;
+		cqdma->pc[i]->irq = platform_get_irq(pdev, i);
+		if (!cqdma->pc[i]->irq) {
+			dev_err(&pdev->dev, "No irq resource for %s\n",
+				dev_name(&pdev->dev));
+			return -EINVAL;
+		}
 
 		err = devm_request_irq(&pdev->dev, cqdma->pc[i]->irq,
 				       mtk_cqdma_irq, 0, dev_name(&pdev->dev),
@@ -874,7 +903,8 @@ static int mtk_cqdma_probe(struct platform_device *pdev)
 
 	/* initialize tasklet for each PC */
 	for (i = 0; i < cqdma->dma_channels; ++i)
-		tasklet_setup(&cqdma->pc[i]->tasklet, mtk_cqdma_tasklet_cb);
+		tasklet_init(&cqdma->pc[i]->tasklet, mtk_cqdma_tasklet_cb,
+			     (unsigned long)cqdma->pc[i]);
 
 	dev_info(&pdev->dev, "MediaTek CQDMA driver registered\n");
 
@@ -892,6 +922,12 @@ static int mtk_cqdma_remove(struct platform_device *pdev)
 	struct mtk_cqdma_vchan *vc;
 	unsigned long flags;
 	int i;
+
+	dma_async_device_unregister(&cqdma->ddev);
+	of_dma_controller_free(pdev->dev.of_node);
+
+	/* disable hardware */
+	mtk_cqdma_hw_deinit(cqdma);
 
 	/* kill VC task */
 	for (i = 0; i < cqdma->dma_requests; i++) {
@@ -914,11 +950,11 @@ static int mtk_cqdma_remove(struct platform_device *pdev)
 		tasklet_kill(&cqdma->pc[i]->tasklet);
 	}
 
-	/* disable hardware */
-	mtk_cqdma_hw_deinit(cqdma);
-
-	dma_async_device_unregister(&cqdma->ddev);
-	of_dma_controller_free(pdev->dev.of_node);
+	devm_kfree(&pdev->dev, cqdma->vc);
+	for (i = 0; i < cqdma->dma_channels; ++i)
+		devm_kfree(&pdev->dev, cqdma->pc[i]);
+	devm_kfree(&pdev->dev, cqdma->pc);
+	devm_kfree(&pdev->dev, cqdma);
 
 	return 0;
 }

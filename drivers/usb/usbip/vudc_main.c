@@ -1,9 +1,21 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2015 Karol Kosik <karo9@interia.eu>
  * Copyright (C) 2015-2016 Samsung Electronics
  *               Igor Kotrasinski <i.kotrasinsk@samsung.com>
  *               Krzysztof Opasiak <k.opasiak@samsung.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/device.h>
@@ -22,13 +34,12 @@ static struct platform_driver vudc_driver = {
 	.remove		= vudc_remove,
 	.driver		= {
 		.name	= GADGET_NAME,
-		.dev_groups = vudc_groups,
 	},
 };
 
-static LIST_HEAD(vudc_devices);
+static struct list_head vudc_devices = LIST_HEAD_INIT(vudc_devices);
 
-static int __init vudc_init(void)
+static int __init init(void)
 {
 	int retval = -ENOMEM;
 	int i;
@@ -86,9 +97,9 @@ cleanup:
 out:
 	return retval;
 }
-module_init(vudc_init);
+module_init(init);
 
-static void __exit vudc_cleanup(void)
+static void __exit cleanup(void)
 {
 	struct vudc_device *udc_dev = NULL, *udc_dev2 = NULL;
 
@@ -103,7 +114,7 @@ static void __exit vudc_cleanup(void)
 	}
 	platform_driver_unregister(&vudc_driver);
 }
-module_exit(vudc_cleanup);
+module_exit(cleanup);
 
 MODULE_DESCRIPTION("USB over IP Device Controller");
 MODULE_AUTHOR("Krzysztof Opasiak, Karol Kosik, Igor Kotrasinski");

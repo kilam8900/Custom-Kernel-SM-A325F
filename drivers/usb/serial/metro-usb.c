@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
   Some of this code is credited to Linux USB open source files that are
   distributed with Linux.
@@ -55,24 +54,12 @@ MODULE_DEVICE_TABLE(usb, id_table);
 #define UNI_CMD_OPEN	0x80
 #define UNI_CMD_CLOSE	0xFF
 
-static int metrousb_is_unidirectional_mode(struct usb_serial *serial)
+static inline int metrousb_is_unidirectional_mode(struct usb_serial_port *port)
 {
-	u16 product_id = le16_to_cpu(serial->dev->descriptor.idProduct);
+	__u16 product_id = le16_to_cpu(
+		port->serial->dev->descriptor.idProduct);
 
 	return product_id == FOCUS_PRODUCT_ID_UNI;
-}
-
-static int metrousb_calc_num_ports(struct usb_serial *serial,
-				   struct usb_serial_endpoints *epds)
-{
-	if (metrousb_is_unidirectional_mode(serial)) {
-		if (epds->num_interrupt_out == 0) {
-			dev_err(&serial->interface->dev, "interrupt-out endpoint missing\n");
-			return -ENODEV;
-		}
-	}
-
-	return 1;
 }
 
 static int metrousb_send_unidirectional_cmd(u8 cmd, struct usb_serial_port *port)
@@ -81,7 +68,7 @@ static int metrousb_send_unidirectional_cmd(u8 cmd, struct usb_serial_port *port
 	int actual_len;
 	u8 *buffer_cmd = NULL;
 
-	if (!metrousb_is_unidirectional_mode(port->serial))
+	if (!metrousb_is_unidirectional_mode(port))
 		return 0;
 
 	buffer_cmd = kzalloc(sizeof(cmd), GFP_KERNEL);
@@ -109,9 +96,9 @@ static void metrousb_read_int_callback(struct urb *urb)
 	struct usb_serial_port *port = urb->context;
 	struct metrousb_private *metro_priv = usb_get_serial_port_data(port);
 	unsigned char *data = urb->transfer_buffer;
-	unsigned long flags;
 	int throttled = 0;
 	int result = 0;
+	unsigned long flags = 0;
 
 	dev_dbg(&port->dev, "%s\n", __func__);
 
@@ -171,8 +158,15 @@ static int metrousb_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct usb_serial *serial = port->serial;
 	struct metrousb_private *metro_priv = usb_get_serial_port_data(port);
-	unsigned long flags;
+	unsigned long flags = 0;
 	int result = 0;
+
+	/* Make sure the urb is initialized. */
+	if (!port->interrupt_in_urb) {
+		dev_err(&port->dev, "%s - interrupt urb not initialized\n",
+			__func__);
+		return -ENODEV;
+	}
 
 	/* Set the private data information for the port. */
 	spin_lock_irqsave(&metro_priv->lock, flags);
@@ -256,19 +250,21 @@ static int metrousb_port_probe(struct usb_serial_port *port)
 	return 0;
 }
 
-static void metrousb_port_remove(struct usb_serial_port *port)
+static int metrousb_port_remove(struct usb_serial_port *port)
 {
 	struct metrousb_private *metro_priv;
 
 	metro_priv = usb_get_serial_port_data(port);
 	kfree(metro_priv);
+
+	return 0;
 }
 
 static void metrousb_throttle(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct metrousb_private *metro_priv = usb_get_serial_port_data(port);
-	unsigned long flags;
+	unsigned long flags = 0;
 
 	/* Set the private information for the port to stop reading data. */
 	spin_lock_irqsave(&metro_priv->lock, flags);
@@ -281,7 +277,7 @@ static int metrousb_tiocmget(struct tty_struct *tty)
 	unsigned long control_state = 0;
 	struct usb_serial_port *port = tty->driver_data;
 	struct metrousb_private *metro_priv = usb_get_serial_port_data(port);
-	unsigned long flags;
+	unsigned long flags = 0;
 
 	spin_lock_irqsave(&metro_priv->lock, flags);
 	control_state = metro_priv->control_state;
@@ -296,10 +292,10 @@ static int metrousb_tiocmset(struct tty_struct *tty,
 	struct usb_serial_port *port = tty->driver_data;
 	struct usb_serial *serial = port->serial;
 	struct metrousb_private *metro_priv = usb_get_serial_port_data(port);
-	unsigned long flags;
+	unsigned long flags = 0;
 	unsigned long control_state = 0;
 
-	dev_dbg(&port->dev, "%s - set=%d, clear=%d\n", __func__, set, clear);
+	dev_dbg(tty->dev, "%s - set=%d, clear=%d\n", __func__, set, clear);
 
 	spin_lock_irqsave(&metro_priv->lock, flags);
 	control_state = metro_priv->control_state;
@@ -323,7 +319,7 @@ static void metrousb_unthrottle(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct metrousb_private *metro_priv = usb_get_serial_port_data(port);
-	unsigned long flags;
+	unsigned long flags = 0;
 	int result = 0;
 
 	/* Set the private information for the port to resume reading data. */
@@ -334,7 +330,7 @@ static void metrousb_unthrottle(struct tty_struct *tty)
 	/* Submit the urb to read from the port. */
 	result = usb_submit_urb(port->interrupt_in_urb, GFP_ATOMIC);
 	if (result)
-		dev_err(&port->dev,
+		dev_err(tty->dev,
 			"failed submitting interrupt in urb error code=%d\n",
 			result);
 }
@@ -346,8 +342,7 @@ static struct usb_serial_driver metrousb_device = {
 	},
 	.description		= "Metrologic USB to Serial",
 	.id_table		= id_table,
-	.num_interrupt_in	= 1,
-	.calc_num_ports		= metrousb_calc_num_ports,
+	.num_ports		= 1,
 	.open			= metrousb_open,
 	.close			= metrousb_cleanup,
 	.read_int_callback	= metrousb_read_int_callback,
@@ -366,7 +361,7 @@ static struct usb_serial_driver * const serial_drivers[] = {
 
 module_usb_serial_driver(serial_drivers, id_table);
 
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Philip Nicastro");
 MODULE_AUTHOR("Aleksey Babahin <tamerlan311@gmail.com>");
 MODULE_DESCRIPTION(DRIVER_DESC);

@@ -1,11 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/*
+/**
  * opt3001.c - Texas Instruments OPT3001 Light Sensor
  *
- * Copyright (C) 2014 Texas Instruments Incorporated - https://www.ti.com
+ * Copyright (C) 2014 Texas Instruments Incorporated - http://www.ti.com
  *
  * Author: Andreas Dannenberg <dannenberg@ti.com>
  * Based on previous work from: Felipe Balbi <balbi@ti.com>
+ *
+ * This program is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 of the License
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
  */
 
 #include <linux/bitops.h>
@@ -16,7 +24,6 @@
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/types.h>
@@ -276,8 +283,6 @@ static int opt3001_get_lux(struct opt3001 *opt, int *val, int *val2)
 		ret = wait_event_timeout(opt->result_ready_queue,
 				opt->result_ready,
 				msecs_to_jiffies(OPT3001_RESULT_READY_LONG));
-		if (ret == 0)
-			return -ETIMEDOUT;
 	} else {
 		/* Sleep for result ready time */
 		timeout = (opt->int_time == OPT3001_INT_TIME_SHORT) ?
@@ -314,7 +319,9 @@ err:
 		/* Disallow IRQ to access the device while lock is active */
 		opt->ok_to_ignore_lock = false;
 
-	if (ret < 0)
+	if (ret == 0)
+		return -ETIMEDOUT;
+	else if (ret < 0)
 		return ret;
 
 	if (opt->use_irq) {
@@ -578,6 +585,7 @@ err:
 }
 
 static const struct iio_info opt3001_info = {
+	.driver_module = THIS_MODULE,
 	.attrs = &opt3001_attribute_group,
 	.read_raw = opt3001_read_raw,
 	.write_raw = opt3001_write_raw,
@@ -735,7 +743,8 @@ out:
 	return IRQ_HANDLED;
 }
 
-static int opt3001_probe(struct i2c_client *client)
+static int opt3001_probe(struct i2c_client *client,
+		const struct i2c_device_id *id)
 {
 	struct device *dev = &client->dev;
 
@@ -767,6 +776,7 @@ static int opt3001_probe(struct i2c_client *client)
 	iio->name = client->name;
 	iio->channels = opt3001_channels;
 	iio->num_channels = ARRAY_SIZE(opt3001_channels);
+	iio->dev.parent = dev;
 	iio->modes = INDIO_DIRECT_MODE;
 	iio->info = &opt3001_info;
 
@@ -793,7 +803,7 @@ static int opt3001_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void opt3001_remove(struct i2c_client *client)
+static int opt3001_remove(struct i2c_client *client)
 {
 	struct iio_dev *iio = i2c_get_clientdata(client);
 	struct opt3001 *opt = iio_priv(iio);
@@ -807,7 +817,7 @@ static void opt3001_remove(struct i2c_client *client)
 	if (ret < 0) {
 		dev_err(opt->dev, "failed to read register %02x\n",
 				OPT3001_CONFIGURATION);
-		return;
+		return ret;
 	}
 
 	reg = ret;
@@ -818,7 +828,10 @@ static void opt3001_remove(struct i2c_client *client)
 	if (ret < 0) {
 		dev_err(opt->dev, "failed to write register %02x\n",
 				OPT3001_CONFIGURATION);
+		return ret;
 	}
+
+	return 0;
 }
 
 static const struct i2c_device_id opt3001_id[] = {
@@ -834,13 +847,13 @@ static const struct of_device_id opt3001_of_match[] = {
 MODULE_DEVICE_TABLE(of, opt3001_of_match);
 
 static struct i2c_driver opt3001_driver = {
-	.probe_new = opt3001_probe,
+	.probe = opt3001_probe,
 	.remove = opt3001_remove,
 	.id_table = opt3001_id,
 
 	.driver = {
 		.name = "opt3001",
-		.of_match_table = opt3001_of_match,
+		.of_match_table = of_match_ptr(opt3001_of_match),
 	},
 };
 

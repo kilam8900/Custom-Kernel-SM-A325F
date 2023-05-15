@@ -97,7 +97,6 @@
 #define ELF_NTMSPRREG	3	/* include tfhar, tfiar, texasr */
 #define ELF_NEBB	3	/* includes ebbrr, ebbhr, bescr */
 #define ELF_NPMU	5	/* includes siar, sdar, sier, mmcr2, mmcr0 */
-#define ELF_NPKEY	3	/* includes amr, iamr, uamor */
 
 typedef unsigned long elf_greg_t64;
 typedef elf_greg_t64 elf_gregset_t64[ELF_NGREG];
@@ -288,5 +287,13 @@ typedef elf_fpreg_t elf_vsrreghalf_t32[ELF_NVSRHALFREG];
 
 /* Keep this the last entry.  */
 #define R_PPC64_NUM		253
+
+/* There's actually a third entry here, but it's unused */
+struct ppc64_opd_entry
+{
+	unsigned long funcaddr;
+	unsigned long r2;
+};
+
 
 #endif /* _UAPI_ASM_POWERPC_ELF_H */

@@ -1,6 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2017 Pengutronix, Juergen Borleis <kernel@pengutronix.de>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -29,7 +38,8 @@ static const struct regmap_config lan9303_i2c_regmap_config = {
 	.cache_type = REGCACHE_NONE,
 };
 
-static int lan9303_i2c_probe(struct i2c_client *client)
+static int lan9303_i2c_probe(struct i2c_client *client,
+			     const struct i2c_device_id *id)
 {
 	struct lan9303_i2c *sw_dev;
 	int ret;
@@ -40,7 +50,7 @@ static int lan9303_i2c_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	sw_dev->chip.regmap = devm_regmap_init_i2c(client,
-						   &lan9303_i2c_regmap_config);
+						&lan9303_i2c_regmap_config);
 	if (IS_ERR(sw_dev->chip.regmap)) {
 		ret = PTR_ERR(sw_dev->chip.regmap);
 		dev_err(&client->dev, "Failed to allocate register map: %d\n",
@@ -64,26 +74,15 @@ static int lan9303_i2c_probe(struct i2c_client *client)
 	return 0;
 }
 
-static void lan9303_i2c_remove(struct i2c_client *client)
+static int lan9303_i2c_remove(struct i2c_client *client)
 {
-	struct lan9303_i2c *sw_dev = i2c_get_clientdata(client);
+	struct lan9303_i2c *sw_dev;
 
+	sw_dev = i2c_get_clientdata(client);
 	if (!sw_dev)
-		return;
+		return -ENODEV;
 
-	lan9303_remove(&sw_dev->chip);
-}
-
-static void lan9303_i2c_shutdown(struct i2c_client *client)
-{
-	struct lan9303_i2c *sw_dev = i2c_get_clientdata(client);
-
-	if (!sw_dev)
-		return;
-
-	lan9303_shutdown(&sw_dev->chip);
-
-	i2c_set_clientdata(client, NULL);
+	return lan9303_remove(&sw_dev->chip);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -105,9 +104,8 @@ static struct i2c_driver lan9303_i2c_driver = {
 		.name = "LAN9303_I2C",
 		.of_match_table = of_match_ptr(lan9303_i2c_of_match),
 	},
-	.probe_new = lan9303_i2c_probe,
+	.probe = lan9303_i2c_probe,
 	.remove = lan9303_i2c_remove,
-	.shutdown = lan9303_i2c_shutdown,
 	.id_table = lan9303_i2c_id,
 };
 module_i2c_driver(lan9303_i2c_driver);

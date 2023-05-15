@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  Copyright (C) 2014 Linaro Ltd
  *
  * Author: Ulf Hansson <ulf.hansson@linaro.org>
+ *
+ * License terms: GNU General Public License (GPL) version 2
  *
  *  Simple MMC power sequence management
  */
@@ -39,22 +40,18 @@ static void mmc_pwrseq_simple_set_gpios_value(struct mmc_pwrseq_simple *pwrseq,
 	struct gpio_descs *reset_gpios = pwrseq->reset_gpios;
 
 	if (!IS_ERR(reset_gpios)) {
-		unsigned long *values;
+		int i, *values;
 		int nvalues = reset_gpios->ndescs;
 
-		values = bitmap_alloc(nvalues, GFP_KERNEL);
+		values = kmalloc_array(nvalues, sizeof(int), GFP_KERNEL);
 		if (!values)
 			return;
 
-		if (value)
-			bitmap_fill(values, nvalues);
-		else
-			bitmap_zero(values, nvalues);
+		for (i = 0; i < nvalues; i++)
+			values[i] = value;
 
-		gpiod_set_array_value_cansleep(nvalues, reset_gpios->desc,
-					       reset_gpios->info, values);
-
-		bitmap_free(values);
+		gpiod_set_array_value_cansleep(nvalues, reset_gpios->desc, values);
+		kfree(values);
 	}
 }
 
@@ -119,14 +116,14 @@ static int mmc_pwrseq_simple_probe(struct platform_device *pdev)
 
 	pwrseq->ext_clk = devm_clk_get(dev, "ext_clock");
 	if (IS_ERR(pwrseq->ext_clk) && PTR_ERR(pwrseq->ext_clk) != -ENOENT)
-		return dev_err_probe(dev, PTR_ERR(pwrseq->ext_clk), "external clock not ready\n");
+		return PTR_ERR(pwrseq->ext_clk);
 
 	pwrseq->reset_gpios = devm_gpiod_get_array(dev, "reset",
 							GPIOD_OUT_HIGH);
 	if (IS_ERR(pwrseq->reset_gpios) &&
 	    PTR_ERR(pwrseq->reset_gpios) != -ENOENT &&
 	    PTR_ERR(pwrseq->reset_gpios) != -ENOSYS) {
-		return dev_err_probe(dev, PTR_ERR(pwrseq->reset_gpios), "reset GPIOs not ready\n");
+		return PTR_ERR(pwrseq->reset_gpios);
 	}
 
 	device_property_read_u32(dev, "post-power-on-delay-ms",

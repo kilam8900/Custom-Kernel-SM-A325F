@@ -1,7 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (c) 1996, 2003 VIA Networking Technologies, Inc.
  * All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * File: srom.c
  *
  * Purpose:Implement functions to access eeprom
  *
@@ -27,7 +38,8 @@
  *
  */
 
-#include "device.h"
+#include "upc.h"
+#include "tmacro.h"
 #include "mac.h"
 #include "srom.h"
 
@@ -65,29 +77,29 @@ unsigned char SROMbyReadEmbedded(void __iomem *iobase,
 	unsigned char byOrg;
 
 	byData = 0xFF;
-	byOrg = ioread8(iobase + MAC_REG_I2MCFG);
+	VNSvInPortB(iobase + MAC_REG_I2MCFG, &byOrg);
 	/* turn off hardware retry for getting NACK */
-	iowrite8(byOrg & (~I2MCFG_NORETRY), iobase + MAC_REG_I2MCFG);
+	VNSvOutPortB(iobase + MAC_REG_I2MCFG, (byOrg & (~I2MCFG_NORETRY)));
 	for (wNoACK = 0; wNoACK < W_MAX_I2CRETRY; wNoACK++) {
-		iowrite8(EEP_I2C_DEV_ID, iobase + MAC_REG_I2MTGID);
-		iowrite8(byContntOffset, iobase + MAC_REG_I2MTGAD);
+		VNSvOutPortB(iobase + MAC_REG_I2MTGID, EEP_I2C_DEV_ID);
+		VNSvOutPortB(iobase + MAC_REG_I2MTGAD, byContntOffset);
 
 		/* issue read command */
-		iowrite8(I2MCSR_EEMR, iobase + MAC_REG_I2MCSR);
+		VNSvOutPortB(iobase + MAC_REG_I2MCSR, I2MCSR_EEMR);
 		/* wait DONE be set */
 		for (wDelay = 0; wDelay < W_MAX_TIMEOUT; wDelay++) {
-			byWait = ioread8(iobase + MAC_REG_I2MCSR);
+			VNSvInPortB(iobase + MAC_REG_I2MCSR, &byWait);
 			if (byWait & (I2MCSR_DONE | I2MCSR_NACK))
 				break;
-			udelay(CB_DELAY_LOOP_WAIT);
+			PCAvDelayByIO(CB_DELAY_LOOP_WAIT);
 		}
 		if ((wDelay < W_MAX_TIMEOUT) &&
 		    (!(byWait & I2MCSR_NACK))) {
 			break;
 		}
 	}
-	byData = ioread8(iobase + MAC_REG_I2MDIPT);
-	iowrite8(byOrg, iobase + MAC_REG_I2MCFG);
+	VNSvInPortB(iobase + MAC_REG_I2MDIPT, &byData);
+	VNSvOutPortB(iobase + MAC_REG_I2MCFG, byOrg);
 	return byData;
 }
 

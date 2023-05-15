@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include "util.h"
-#include "../util/debug.h"
-#include <stdio.h>
+#include "../debug.h"
+
 
 /*
  * Default error logging functions
@@ -15,9 +15,6 @@ static int perf_stdio__error(const char *format, va_list args)
 
 static int perf_stdio__warning(const char *format, va_list args)
 {
-	if (quiet)
-		return 0;
-
 	fprintf(stderr, "Warning:\n");
 	vfprintf(stderr, format, args);
 	return 0;
@@ -48,8 +45,6 @@ int ui__warning(const char *format, ...)
 {
 	int ret;
 	va_list args;
-	if (quiet)
-		return 0;
 
 	va_start(args, format);
 	ret = perf_eops->warning(format, args);

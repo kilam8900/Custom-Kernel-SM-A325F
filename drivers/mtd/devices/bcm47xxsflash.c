@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -69,6 +68,7 @@ static int bcm47xxsflash_poll(struct bcm47xxsflash *b47s, int timeout)
 static int bcm47xxsflash_erase(struct mtd_info *mtd, struct erase_info *erase)
 {
 	struct bcm47xxsflash *b47s = mtd->priv;
+	int err;
 
 	switch (b47s->type) {
 	case BCM47XXSFLASH_TYPE_ST:
@@ -89,7 +89,16 @@ static int bcm47xxsflash_erase(struct mtd_info *mtd, struct erase_info *erase)
 		break;
 	}
 
-	return bcm47xxsflash_poll(b47s, HZ);
+	err = bcm47xxsflash_poll(b47s, HZ);
+	if (err)
+		erase->state = MTD_ERASE_FAILED;
+	else
+		erase->state = MTD_ERASE_DONE;
+
+	if (erase->callback)
+		erase->callback(erase);
+
+	return err;
 }
 
 static int bcm47xxsflash_read(struct mtd_info *mtd, loff_t from, size_t len,
@@ -320,7 +329,7 @@ static int bcm47xxsflash_bcma_probe(struct platform_device *pdev)
 	 * ChipCommon revision.
 	 */
 	if (b47s->bcma_cc->core->id.rev == 54)
-		b47s->window = ioremap(res->start, resource_size(res));
+		b47s->window = ioremap_nocache(res->start, resource_size(res));
 	else
 		b47s->window = ioremap_cache(res->start, resource_size(res));
 	if (!b47s->window) {

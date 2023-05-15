@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Driver for CLPS711x serial ports
  *
@@ -6,7 +5,16 @@
  *
  *  Copyright 1999 ARM Limited
  *  Copyright (C) 2000 Deep Blue Solutions Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
+
+#if defined(CONFIG_SERIAL_CLPS711X_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
+#define SUPPORT_SYSRQ
+#endif
 
 #include <linux/module.h>
 #include <linux/device.h>
@@ -166,7 +174,8 @@ static irqreturn_t uart_clps711x_int_tx(int irq, void *dev_id)
 		u32 sysflg = 0;
 
 		writew(xmit->buf[xmit->tail], port->membase + UARTDR_OFFSET);
-		uart_xmit_advance(port, 1);
+		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
+		port->icount.tx++;
 
 		regmap_read(s->syscon, SYSFLG_OFFSET, &sysflg);
 		if (sysflg & SYSFLG_UTXFF)
@@ -250,7 +259,7 @@ static void uart_clps711x_shutdown(struct uart_port *port)
 
 static void uart_clps711x_set_termios(struct uart_port *port,
 				      struct ktermios *termios,
-				      const struct ktermios *old)
+				      struct ktermios *old)
 {
 	u32 ubrlcr;
 	unsigned int baud, quot;
@@ -347,7 +356,7 @@ static const struct uart_ops uart_clps711x_ops = {
 };
 
 #ifdef CONFIG_SERIAL_CLPS711X_CONSOLE
-static void uart_clps711x_console_putchar(struct uart_port *port, unsigned char ch)
+static void uart_clps711x_console_putchar(struct uart_port *port, int ch)
 {
 	struct clps711x_port *s = dev_get_drvdata(port->dev);
 	u32 sysflg = 0;
@@ -437,10 +446,14 @@ static struct console clps711x_console = {
 static int uart_clps711x_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
+	int ret, index = np ? of_alias_get_id(np, "serial") : pdev->id;
 	struct clps711x_port *s;
 	struct resource *res;
 	struct clk *uart_clk;
-	int irq, ret;
+	int irq;
+
+	if (index < 0 || index >= UART_CLPS711X_NR)
+		return -EINVAL;
 
 	s = devm_kzalloc(&pdev->dev, sizeof(*s), GFP_KERNEL);
 	if (!s)
@@ -464,17 +477,25 @@ static int uart_clps711x_probe(struct platform_device *pdev)
 	if (s->rx_irq < 0)
 		return s->rx_irq;
 
-	s->syscon = syscon_regmap_lookup_by_phandle(np, "syscon");
-	if (IS_ERR(s->syscon))
-		return PTR_ERR(s->syscon);
+	if (!np) {
+		char syscon_name[9];
 
-	s->port.line		= of_alias_get_id(np, "serial");
+		sprintf(syscon_name, "syscon.%i", index + 1);
+		s->syscon = syscon_regmap_lookup_by_pdevname(syscon_name);
+		if (IS_ERR(s->syscon))
+			return PTR_ERR(s->syscon);
+	} else {
+		s->syscon = syscon_regmap_lookup_by_phandle(np, "syscon");
+		if (IS_ERR(s->syscon))
+			return PTR_ERR(s->syscon);
+	}
+
+	s->port.line		= index;
 	s->port.dev		= &pdev->dev;
 	s->port.iotype		= UPIO_MEM32;
 	s->port.mapbase		= res->start;
 	s->port.type		= PORT_CLPS711X;
 	s->port.fifosize	= 16;
-	s->port.has_sysrq	= IS_ENABLED(CONFIG_SERIAL_CLPS711X_CONSOLE);
 	s->port.flags		= UPF_SKIP_TEST | UPF_FIXED_TYPE;
 	s->port.uartclk		= clk_get_rate(uart_clk);
 	s->port.ops		= &uart_clps711x_ops;
