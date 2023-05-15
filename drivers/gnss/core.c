@@ -42,7 +42,7 @@ static int gnss_open(struct inode *inode, struct file *file)
 
 	get_device(&gdev->dev);
 
-	nonseekable_open(inode, file);
+	stream_open(inode, file);
 	file->private_data = gdev;
 
 	down_write(&gdev->rwsem);
@@ -184,17 +184,17 @@ out_unlock:
 	return ret;
 }
 
-static unsigned int gnss_poll(struct file *file, poll_table *wait)
+static __poll_t gnss_poll(struct file *file, poll_table *wait)
 {
 	struct gnss_device *gdev = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	poll_wait(file, &gdev->read_queue, wait);
 
 	if (!kfifo_is_empty(&gdev->read_fifo))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 	if (gdev->disconnected)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 
 	return mask;
 }
@@ -217,7 +217,7 @@ static void gnss_device_release(struct device *dev)
 
 	kfree(gdev->write_buf);
 	kfifo_free(&gdev->read_fifo);
-	ida_simple_remove(&gnss_minors, gdev->id);
+	ida_free(&gnss_minors, gdev->id);
 	kfree(gdev);
 }
 
@@ -232,7 +232,7 @@ struct gnss_device *gnss_allocate_device(struct device *parent)
 	if (!gdev)
 		return NULL;
 
-	id = ida_simple_get(&gnss_minors, 0, GNSS_MINORS, GFP_KERNEL);
+	id = ida_alloc_max(&gnss_minors, GNSS_MINORS - 1, GFP_KERNEL);
 	if (id < 0) {
 		kfree(gdev);
 		return NULL;
@@ -334,9 +334,10 @@ static const char * const gnss_type_names[GNSS_TYPE_COUNT] = {
 	[GNSS_TYPE_NMEA]	= "NMEA",
 	[GNSS_TYPE_SIRF]	= "SiRF",
 	[GNSS_TYPE_UBX]		= "UBX",
+	[GNSS_TYPE_MTK]		= "MTK",
 };
 
-static const char *gnss_type_name(struct gnss_device *gdev)
+static const char *gnss_type_name(const struct gnss_device *gdev)
 {
 	const char *name = NULL;
 
@@ -364,9 +365,9 @@ static struct attribute *gnss_attrs[] = {
 };
 ATTRIBUTE_GROUPS(gnss);
 
-static int gnss_uevent(struct device *dev, struct kobj_uevent_env *env)
+static int gnss_uevent(const struct device *dev, struct kobj_uevent_env *env)
 {
-	struct gnss_device *gdev = to_gnss_device(dev);
+	const struct gnss_device *gdev = to_gnss_device(dev);
 	int ret;
 
 	ret = add_uevent_var(env, "GNSS_TYPE=%s", gnss_type_name(gdev));

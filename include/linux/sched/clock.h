@@ -15,12 +15,6 @@
 extern unsigned long long notrace sched_clock(void);
 
 /*
- * alternative sched_clock to get arch_timer cycle as well
- */
-extern unsigned long long notrace sched_clock_get_cyc(
-	unsigned long long *cyc_ret);
-
-/*
  * See the comment in kernel/sched/clock.c
  */
 extern u64 running_clock(void);
@@ -51,7 +45,7 @@ static inline u64 cpu_clock(int cpu)
 	return sched_clock();
 }
 
-static inline u64 local_clock(void)
+static __always_inline u64 local_clock(void)
 {
 	return sched_clock();
 }
@@ -85,10 +79,8 @@ static inline u64 cpu_clock(int cpu)
 	return sched_clock_cpu(cpu);
 }
 
-static inline u64 local_clock(void)
-{
-	return sched_clock_cpu(raw_smp_processor_id());
-}
+extern u64 local_clock(void);
+
 #endif
 
 #ifdef CONFIG_IRQ_TIME_ACCOUNTING

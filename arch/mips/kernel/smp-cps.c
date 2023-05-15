@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2013 Imagination Technologies
  * Author: Paul Burton <paul.burton@mips.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
  */
 
 #include <linux/cpu.h>
@@ -16,6 +12,7 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/types.h>
+#include <linux/irq.h>
 
 #include <asm/bcache.h>
 #include <asm/mips-cps.h>
@@ -165,6 +162,8 @@ static void __init cps_prepare_cpus(unsigned int max_cpus)
 	 */
 	entry_code = (u32 *)&mips_cps_core_entry;
 	uasm_i_addiu(&entry_code, 16, 0, cca);
+	UASM_i_LA(&entry_code, 17, (long)mips_gcr_base);
+	BUG_ON((void *)entry_code > (void *)&mips_cps_core_entry_patch_end);
 	blast_dcache_range((unsigned long)&mips_cps_core_entry,
 			   (unsigned long)entry_code);
 	bc_wback_inv((unsigned long)&mips_cps_core_entry,
@@ -398,15 +397,63 @@ static void cps_smp_finish(void)
 	local_irq_enable();
 }
 
+#if defined(CONFIG_HOTPLUG_CPU) || defined(CONFIG_KEXEC)
+
+enum cpu_death {
+	CPU_DEATH_HALT,
+	CPU_DEATH_POWER,
+};
+
+static void cps_shutdown_this_cpu(enum cpu_death death)
+{
+	unsigned int cpu, core, vpe_id;
+
+	cpu = smp_processor_id();
+	core = cpu_core(&cpu_data[cpu]);
+
+	if (death == CPU_DEATH_HALT) {
+		vpe_id = cpu_vpe_id(&cpu_data[cpu]);
+
+		pr_debug("Halting core %d VP%d\n", core, vpe_id);
+		if (cpu_has_mipsmt) {
+			/* Halt this TC */
+			write_c0_tchalt(TCHALT_H);
+			instruction_hazard();
+		} else if (cpu_has_vp) {
+			write_cpc_cl_vp_stop(1 << vpe_id);
+
+			/* Ensure that the VP_STOP register is written */
+			wmb();
+		}
+	} else {
+		if (IS_ENABLED(CONFIG_HOTPLUG_CPU)) {
+			pr_debug("Gating power to core %d\n", core);
+			/* Power down the core */
+			cps_pm_enter_state(CPS_PM_POWER_GATED);
+		}
+	}
+}
+
+#ifdef CONFIG_KEXEC
+
+static void cps_kexec_nonboot_cpu(void)
+{
+	if (cpu_has_mipsmt || cpu_has_vp)
+		cps_shutdown_this_cpu(CPU_DEATH_HALT);
+	else
+		cps_shutdown_this_cpu(CPU_DEATH_POWER);
+}
+
+#endif /* CONFIG_KEXEC */
+
+#endif /* CONFIG_HOTPLUG_CPU || CONFIG_KEXEC */
+
 #ifdef CONFIG_HOTPLUG_CPU
 
 static int cps_cpu_disable(void)
 {
 	unsigned cpu = smp_processor_id();
 	struct core_boot_config *core_cfg;
-
-	if (!cpu)
-		return -EBUSY;
 
 	if (!cps_pm_support_state(CPS_PM_POWER_GATED))
 		return -EINVAL;
@@ -416,31 +463,26 @@ static int cps_cpu_disable(void)
 	smp_mb__after_atomic();
 	set_cpu_online(cpu, false);
 	calculate_cpu_foreign_map();
+	irq_migrate_all_off_this_cpu();
 
 	return 0;
 }
 
 static unsigned cpu_death_sibling;
-static enum {
-	CPU_DEATH_HALT,
-	CPU_DEATH_POWER,
-} cpu_death;
+static enum cpu_death cpu_death;
 
 void play_dead(void)
 {
-	unsigned int cpu, core, vpe_id;
+	unsigned int cpu;
 
 	local_irq_disable();
 	idle_task_exit();
 	cpu = smp_processor_id();
-	core = cpu_core(&cpu_data[cpu]);
 	cpu_death = CPU_DEATH_POWER;
 
 	pr_debug("CPU%d going offline\n", cpu);
 
 	if (cpu_has_mipsmt || cpu_has_vp) {
-		core = cpu_core(&cpu_data[cpu]);
-
 		/* Look for another online VPE within the core */
 		for_each_online_cpu(cpu_death_sibling) {
 			if (!cpus_are_siblings(cpu, cpu_death_sibling))
@@ -458,25 +500,7 @@ void play_dead(void)
 	/* This CPU has chosen its way out */
 	(void)cpu_report_death();
 
-	if (cpu_death == CPU_DEATH_HALT) {
-		vpe_id = cpu_vpe_id(&cpu_data[cpu]);
-
-		pr_debug("Halting core %d VP%d\n", core, vpe_id);
-		if (cpu_has_mipsmt) {
-			/* Halt this TC */
-			write_c0_tchalt(TCHALT_H);
-			instruction_hazard();
-		} else if (cpu_has_vp) {
-			write_cpc_cl_vp_stop(1 << vpe_id);
-
-			/* Ensure that the VP_STOP register is written */
-			wmb();
-		}
-	} else {
-		pr_debug("Gating power to core %d\n", core);
-		/* Power down the core */
-		cps_pm_enter_state(CPS_PM_POWER_GATED);
-	}
+	cps_shutdown_this_cpu(cpu_death);
 
 	/* This should never be reached */
 	panic("Failed to offline CPU %u", cpu);
@@ -594,6 +618,9 @@ static const struct plat_smp_ops cps_smp_ops = {
 #ifdef CONFIG_HOTPLUG_CPU
 	.cpu_disable		= cps_cpu_disable,
 	.cpu_die		= cps_cpu_die,
+#endif
+#ifdef CONFIG_KEXEC
+	.kexec_nonboot_cpu	= cps_kexec_nonboot_cpu,
 #endif
 };
 

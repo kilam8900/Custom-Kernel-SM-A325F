@@ -189,7 +189,7 @@ static ssize_t write_file_tx99(struct file *file, const char __user *user_buf,
 
 	buf[len] = '\0';
 
-	if (strtobool(buf, &start))
+	if (kstrtobool(buf, &start))
 		return -EINVAL;
 
 	mutex_lock(&sc->mutex);
@@ -276,10 +276,10 @@ void ath9k_tx99_init_debug(struct ath_softc *sc)
 	if (!AR_SREV_9280_20_OR_LATER(sc->sc_ah))
 		return;
 
-	debugfs_create_file("tx99", S_IRUSR | S_IWUSR,
+	debugfs_create_file("tx99", 0600,
 			    sc->debug.debugfs_phy, sc,
 			    &fops_tx99);
-	debugfs_create_file("tx99_power", S_IRUSR | S_IWUSR,
+	debugfs_create_file("tx99_power", 0600,
 			    sc->debug.debugfs_phy, sc,
 			    &fops_tx99_power);
 }

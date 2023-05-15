@@ -1,13 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Cirrus Logic CLPS711X FB driver
  *
  * Copyright (C) 2014 Alexander Shiyan <shc_work@mail.ru>
  * Based on driver by Russell King <rmk@arm.linux.org.uk>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/clk.h>
@@ -157,7 +153,7 @@ static int clps711x_fb_blank(int blank, struct fb_info *info)
 	return 0;
 }
 
-static struct fb_ops clps711x_fb_ops = {
+static const struct fb_ops clps711x_fb_ops = {
 	.owner		= THIS_MODULE,
 	.fb_setcolreg	= clps711x_fb_setcolreg,
 	.fb_check_var	= clps711x_fb_check_var,
@@ -242,8 +238,7 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 	info->fix.mmio_start = res->start;
 	info->fix.mmio_len = resource_size(res);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 1);
-	info->screen_base = devm_ioremap_resource(dev, res);
+	info->screen_base = devm_platform_get_and_ioremap_resource(pdev, 1, &res);
 	if (IS_ERR(info->screen_base)) {
 		ret = PTR_ERR(info->screen_base);
 		goto out_fb_release;
@@ -255,16 +250,8 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 		goto out_fb_release;
 	}
 
-	info->apertures = alloc_apertures(1);
-	if (!info->apertures) {
-		ret = -ENOMEM;
-		goto out_fb_release;
-	}
-
 	cfb->buffsize = resource_size(res);
 	info->fix.smem_start = res->start;
-	info->apertures->ranges[0].base = info->fix.smem_start;
-	info->apertures->ranges[0].size = cfb->buffsize;
 
 	cfb->clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(cfb->clk)) {
@@ -272,8 +259,7 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 		goto out_fb_release;
 	}
 
-	cfb->syscon =
-		syscon_regmap_lookup_by_compatible("cirrus,ep7209-syscon1");
+	cfb->syscon = syscon_regmap_lookup_by_phandle(np, "syscon");
 	if (IS_ERR(cfb->syscon)) {
 		ret = PTR_ERR(cfb->syscon);
 		goto out_fb_release;
@@ -331,7 +317,7 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 	info->var.vmode = FB_VMODE_NONINTERLACED;
 	info->fix.type = FB_TYPE_PACKED_PIXELS;
 	info->fix.accel = FB_ACCEL_NONE;
-	strlcpy(info->fix.id, CLPS711X_FB_NAME, sizeof(info->fix.id));
+	strscpy(info->fix.id, CLPS711X_FB_NAME, sizeof(info->fix.id));
 	fb_videomode_to_var(&info->var, &cfb->mode);
 
 	ret = fb_alloc_cmap(&info->cmap, BIT(CLPS711X_FB_BPP_MAX), 0);
@@ -350,7 +336,7 @@ static int clps711x_fb_probe(struct platform_device *pdev)
 				       &clps711x_lcd_ops);
 	if (!IS_ERR(lcd))
 		return 0;
-	
+
 	ret = PTR_ERR(lcd);
 	unregister_framebuffer(info);
 

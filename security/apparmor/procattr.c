@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AppArmor security module
  *
@@ -5,15 +6,10 @@
  *
  * Copyright (C) 1998-2008 Novell/SUSE
  * Copyright 2009-2010 Canonical Ltd.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2 of the
- * License.
  */
 
 #include "include/apparmor.h"
-#include "include/context.h"
+#include "include/cred.h"
 #include "include/policy.h"
 #include "include/policy_ns.h"
 #include "include/domain.h"
@@ -21,16 +17,13 @@
 
 
 /**
- * aa_getprocattr - Return the profile information for @profile
- * @profile: the profile to print profile info about  (NOT NULL)
- * @string: Returns - string containing the profile info (NOT NULL)
+ * aa_getprocattr - Return the label information for @label
+ * @label: the label to print label info about  (NOT NULL)
+ * @string: Returns - string containing the label info (NOT NULL)
  *
- * Returns: length of @string on success else error on failure
+ * Requires: label != NULL && string != NULL
  *
- * Requires: profile != NULL
- *
- * Creates a string containing the namespace_name://profile_name for
- * @profile.
+ * Creates a string containing the label information for @label.
  *
  * Returns: size of string placed in @string else error code on failure
  */
@@ -96,7 +89,7 @@ static char *split_token_from_name(const char *op, char *args, u64 *token)
 }
 
 /**
- * aa_setprocattr_chagnehat - handle procattr interface to change_hat
+ * aa_setprocattr_changehat - handle procattr interface to change_hat
  * @args: args received from writing to /proc/<pid>/attr/current (NOT NULL)
  * @size: size of the args
  * @flags: set of flags governing behavior

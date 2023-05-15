@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Defines for Mobile Industry Processor Interface (MIPI(R))
  * Display Working Group standards: DSI, DCS, DBI, DPI
@@ -5,10 +6,6 @@
  * Copyright (C) 2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
  * Copyright (C) 2006 Nokia Corporation
  * Author: Imre Deak <imre.deak@nokia.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef MIPI_DISPLAY_H
 #define MIPI_DISPLAY_H
@@ -111,7 +108,7 @@ enum {
 	MIPI_DCS_WRITE_MEMORY_START	= 0x2C,
 	MIPI_DCS_WRITE_LUT		= 0x2D,
 	MIPI_DCS_READ_MEMORY_START	= 0x2E,
-	MIPI_DCS_SET_PARTIAL_AREA	= 0x30,
+	MIPI_DCS_SET_PARTIAL_ROWS	= 0x30,		/* MIPI DCS 1.02 - MIPI_DCS_SET_PARTIAL_AREA before that */
 	MIPI_DCS_SET_PARTIAL_COLUMNS	= 0x31,
 	MIPI_DCS_SET_SCROLL_AREA	= 0x33,
 	MIPI_DCS_SET_TEAR_OFF		= 0x34,

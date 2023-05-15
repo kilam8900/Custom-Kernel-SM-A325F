@@ -518,7 +518,6 @@ static int spear_mtd_erase(struct mtd_info *mtd, struct erase_info *e_info)
 		/* preparing the command for flash */
 		ret = spear_smi_erase_sector(dev, bank, command, 4);
 		if (ret) {
-			e_info->state = MTD_ERASE_FAILED;
 			mutex_unlock(&flash->lock);
 			return ret;
 		}
@@ -527,8 +526,6 @@ static int spear_mtd_erase(struct mtd_info *mtd, struct erase_info *e_info)
 	}
 
 	mutex_unlock(&flash->lock);
-	e_info->state = MTD_ERASE_DONE;
-	mtd_erase_callback(e_info);
 
 	return 0;
 }
@@ -796,7 +793,7 @@ static int spear_smi_probe_config_dt(struct platform_device *pdev,
 				     struct device_node *np)
 {
 	struct spear_smi_plat_data *pdata = dev_get_platdata(&pdev->dev);
-	struct device_node *pp = NULL;
+	struct device_node *pp;
 	const __be32 *addr;
 	u32 val;
 	int len;
@@ -815,10 +812,7 @@ static int spear_smi_probe_config_dt(struct platform_device *pdev,
 		return -ENOMEM;
 
 	/* Fill structs for each subnode (flash device) */
-	while ((pp = of_get_next_child(np, pp))) {
-		struct spear_smi_flash_info *flash_info;
-
-		flash_info = &pdata->board_flash_info[i];
+	for_each_child_of_node(np, pp) {
 		pdata->np[i] = pp;
 
 		/* Read base-addr and size from DT */
@@ -972,11 +966,10 @@ static int spear_smi_probe(struct platform_device *pdev)
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
 		ret = -ENODEV;
-		dev_err(&pdev->dev, "invalid smi irq\n");
 		goto err;
 	}
 
-	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_ATOMIC);
+	dev = devm_kzalloc(&pdev->dev, sizeof(*dev), GFP_KERNEL);
 	if (!dev) {
 		ret = -ENOMEM;
 		goto err;
@@ -1052,13 +1045,9 @@ static int spear_smi_remove(struct platform_device *pdev)
 {
 	struct spear_smi *dev;
 	struct spear_snor_flash *flash;
-	int ret, i;
+	int i;
 
 	dev = platform_get_drvdata(pdev);
-	if (!dev) {
-		dev_err(&pdev->dev, "dev is null\n");
-		return -ENODEV;
-	}
 
 	/* clean up for all nor flash */
 	for (i = 0; i < dev->num_flashes; i++) {
@@ -1067,9 +1056,7 @@ static int spear_smi_remove(struct platform_device *pdev)
 			continue;
 
 		/* clean up mtd stuff */
-		ret = mtd_device_unregister(&flash->mtd);
-		if (ret)
-			dev_err(&pdev->dev, "error removing mtd\n");
+		WARN_ON(mtd_device_unregister(&flash->mtd));
 	}
 
 	clk_disable_unprepare(dev->clk);

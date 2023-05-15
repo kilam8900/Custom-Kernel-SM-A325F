@@ -32,6 +32,7 @@
 
 #include <linux/types.h>
 #include <linux/completion.h>
+#include <linux/idr.h>
 
 #include <uapi/drm/drm.h>
 
@@ -41,16 +42,24 @@ struct dma_fence;
 struct drm_file;
 struct drm_device;
 struct device;
+struct file;
 
 /*
  * FIXME: Not sure we want to have drm_minor here in the end, but to avoid
  * header include loops we need it here for now.
  */
 
+/* Note that the order of this enum is ABI (it determines
+ * /dev/dri/renderD* numbers).
+ *
+ * Setting DRM_MINOR_ACCEL to 32 gives enough space for more drm minors to
+ * be implemented before we hit any future
+ */
 enum drm_minor_type {
 	DRM_MINOR_PRIMARY,
 	DRM_MINOR_CONTROL,
 	DRM_MINOR_RENDER,
+	DRM_MINOR_ACCEL = 32,
 };
 
 /**
@@ -65,7 +74,7 @@ enum drm_minor_type {
 struct drm_minor {
 	/* private: */
 	int index;			/* Minor device number */
-	int type;                       /* Control or render */
+	int type;                       /* Control or render or accel */
 	struct device *kdev;		/* Linux device */
 	struct drm_device *dev;
 
@@ -161,14 +170,14 @@ struct drm_file {
 	 * See also the :ref:`section on primary nodes and authentication
 	 * <drm_primary_node>`.
 	 */
-	unsigned authenticated :1;
+	bool authenticated;
 
 	/**
 	 * @stereo_allowed:
 	 *
 	 * True when the client has asked us to expose stereo 3D mode flags.
 	 */
-	unsigned stereo_allowed :1;
+	bool stereo_allowed;
 
 	/**
 	 * @universal_planes:
@@ -176,10 +185,36 @@ struct drm_file {
 	 * True if client understands CRTC primary planes and cursor planes
 	 * in the plane list. Automatically set when @atomic is set.
 	 */
-	unsigned universal_planes:1;
+	bool universal_planes;
 
 	/** @atomic: True if client understands atomic properties. */
-	unsigned atomic:1;
+	bool atomic;
+
+	/**
+	 * @aspect_ratio_allowed:
+	 *
+	 * True, if client can handle picture aspect ratios, and has requested
+	 * to pass this information along with the mode.
+	 */
+	bool aspect_ratio_allowed;
+
+	/**
+	 * @writeback_connectors:
+	 *
+	 * True if client understands writeback connectors
+	 */
+	bool writeback_connectors;
+
+	/**
+	 * @was_master:
+	 *
+	 * This client has or had, master capability. Protected by struct
+	 * &drm_device.master_mutex.
+	 *
+	 * This is used to ensure that CAP_SYS_ADMIN is not enforced, if the
+	 * client is or was master in the past.
+	 */
+	bool was_master;
 
 	/**
 	 * @is_master:
@@ -190,19 +225,35 @@ struct drm_file {
 	 * See also the :ref:`section on primary nodes and authentication
 	 * <drm_primary_node>`.
 	 */
-	unsigned is_master:1;
+	bool is_master;
 
 	/**
 	 * @master:
 	 *
-	 * Master this node is currently associated with. Only relevant if
-	 * drm_is_primary_client() returns true. Note that this only
-	 * matches &drm_device.master if the master is the currently active one.
+	 * Master this node is currently associated with. Protected by struct
+	 * &drm_device.master_mutex, and serialized by @master_lookup_lock.
+	 *
+	 * Only relevant if drm_is_primary_client() returns true. Note that
+	 * this only matches &drm_device.master if the master is the currently
+	 * active one.
+	 *
+	 * To update @master, both &drm_device.master_mutex and
+	 * @master_lookup_lock need to be held, therefore holding either of
+	 * them is safe and enough for the read side.
+	 *
+	 * When dereferencing this pointer, either hold struct
+	 * &drm_device.master_mutex for the duration of the pointer's use, or
+	 * use drm_file_get_master() if struct &drm_device.master_mutex is not
+	 * currently held and there is no other need to hold it. This prevents
+	 * @master from being freed during use.
 	 *
 	 * See also @authentication and @is_master and the :ref:`section on
 	 * primary nodes and authentication <drm_primary_node>`.
 	 */
 	struct drm_master *master;
+
+	/** @master_lookup_lock: Serializes @master. */
+	spinlock_t master_lookup_lock;
 
 	/** @pid: Process that opened this file. */
 	struct pid *pid;
@@ -316,7 +367,9 @@ struct drm_file {
 	struct drm_prime_file_private prime;
 
 	/* private: */
+#if IS_ENABLED(CONFIG_DRM_LEGACY)
 	unsigned long lock_count; /* DRI1 legacy lock count */
+#endif
 };
 
 /**
@@ -349,22 +402,26 @@ static inline bool drm_is_render_client(const struct drm_file *file_priv)
 }
 
 /**
- * drm_is_control_client - is this an open file of the control node
+ * drm_is_accel_client - is this an open file of the compute acceleration node
  * @file_priv: DRM file
  *
- * Control nodes are deprecated and in the process of getting removed from the
- * DRM userspace API. Do not ever use!
+ * Returns true if this is an open file of the compute acceleration node, i.e.
+ * &drm_file.minor of @file_priv is a accel minor.
+ *
+ * See also the :ref:`section on accel nodes <drm_accel_node>`.
  */
-static inline bool drm_is_control_client(const struct drm_file *file_priv)
+static inline bool drm_is_accel_client(const struct drm_file *file_priv)
 {
-	return file_priv->minor->type == DRM_MINOR_CONTROL;
+	return file_priv->minor->type == DRM_MINOR_ACCEL;
 }
 
 int drm_open(struct inode *inode, struct file *filp);
+int drm_open_helper(struct file *filp, struct drm_minor *minor);
 ssize_t drm_read(struct file *filp, char __user *buffer,
 		 size_t count, loff_t *offset);
 int drm_release(struct inode *inode, struct file *filp);
-unsigned int drm_poll(struct file *filp, struct poll_table_struct *wait);
+int drm_release_noglobal(struct inode *inode, struct file *filp);
+__poll_t drm_poll(struct file *filp, struct poll_table_struct *wait);
 int drm_event_reserve_init_locked(struct drm_device *dev,
 				  struct drm_file *file_priv,
 				  struct drm_pending_event *p,
@@ -377,5 +434,10 @@ void drm_event_cancel_free(struct drm_device *dev,
 			   struct drm_pending_event *p);
 void drm_send_event_locked(struct drm_device *dev, struct drm_pending_event *e);
 void drm_send_event(struct drm_device *dev, struct drm_pending_event *e);
+void drm_send_event_timestamp_locked(struct drm_device *dev,
+				     struct drm_pending_event *e,
+				     ktime_t timestamp);
+
+struct file *mock_drm_getfile(struct drm_minor *minor, unsigned int flags);
 
 #endif /* _DRM_FILE_H_ */

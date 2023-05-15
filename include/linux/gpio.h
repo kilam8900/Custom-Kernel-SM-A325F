@@ -1,10 +1,20 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * <linux/gpio.h>
+ *
+ * This is the LEGACY GPIO bulk include file, including legacy APIs. It is
+ * used for GPIO drivers still referencing the global GPIO numberspace,
+ * and should not be included in new code.
+ *
+ * If you're implementing a GPIO driver, only include <linux/gpio/driver.h>
+ * If you're implementing a GPIO consumer, only include <linux/gpio/consumer.h>
+ */
 #ifndef __LINUX_GPIO_H
 #define __LINUX_GPIO_H
 
 #include <linux/errno.h>
 
-/* see Documentation/gpio/gpio-legacy.txt */
+/* see Documentation/driver-api/gpio/legacy.rst */
 
 /* make these flag values available regardless of GPIO kconfig options */
 #define GPIOF_DIR_OUT	(0 << 0)
@@ -71,11 +81,6 @@ static inline int gpio_to_irq(unsigned int gpio)
 	return __gpio_to_irq(gpio);
 }
 
-static inline int irq_to_gpio(unsigned int irq)
-{
-	return -EINVAL;
-}
-
 #endif /* ! CONFIG_ARCH_HAVE_CUSTOM_GPIO_H */
 
 /* CONFIG_GPIOLIB: bindings for managed devices that want to request gpios */
@@ -85,14 +90,12 @@ struct device;
 int devm_gpio_request(struct device *dev, unsigned gpio, const char *label);
 int devm_gpio_request_one(struct device *dev, unsigned gpio,
 			  unsigned long flags, const char *label);
-void devm_gpio_free(struct device *dev, unsigned int gpio);
 
 #else /* ! CONFIG_GPIOLIB */
 
+#include <linux/bug.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
-#include <linux/bug.h>
-#include <linux/pinctrl/pinctrl.h>
 
 struct device;
 struct gpio_chip;
@@ -189,14 +192,6 @@ static inline int gpio_export(unsigned gpio, bool direction_may_change)
 	return -EINVAL;
 }
 
-static inline int gpio_export_link(struct device *dev, const char *name,
-				unsigned gpio)
-{
-	/* GPIO can never have been exported */
-	WARN_ON(1);
-	return -EINVAL;
-}
-
 static inline void gpio_unexport(unsigned gpio)
 {
 	/* GPIO can never have been exported */
@@ -206,26 +201,6 @@ static inline void gpio_unexport(unsigned gpio)
 static inline int gpio_to_irq(unsigned gpio)
 {
 	/* GPIO can never have been requested or set as input */
-	WARN_ON(1);
-	return -EINVAL;
-}
-
-static inline int gpiochip_lock_as_irq(struct gpio_chip *chip,
-				       unsigned int offset)
-{
-	WARN_ON(1);
-	return -EINVAL;
-}
-
-static inline void gpiochip_unlock_as_irq(struct gpio_chip *chip,
-					  unsigned int offset)
-{
-	WARN_ON(1);
-}
-
-static inline int irq_to_gpio(unsigned irq)
-{
-	/* irq can never have been returned from gpio_to_irq() */
 	WARN_ON(1);
 	return -EINVAL;
 }
@@ -242,11 +217,6 @@ static inline int devm_gpio_request_one(struct device *dev, unsigned gpio,
 {
 	WARN_ON(1);
 	return -EINVAL;
-}
-
-static inline void devm_gpio_free(struct device *dev, unsigned int gpio)
-{
-	WARN_ON(1);
 }
 
 #endif /* ! CONFIG_GPIOLIB */

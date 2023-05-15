@@ -1,17 +1,34 @@
 // SPDX-License-Identifier: GPL-2.0
-#include "sched.h"
 
-#include <linux/proc_fs.h>
-#include <linux/seq_file.h>
-#include <linux/kallsyms.h>
-#include <linux/utsname.h>
-#include <linux/security.h>
-#include <linux/export.h>
-#include <linux/nospec.h>
+/*
+ * Auto-group scheduling implementation:
+ */
 
 unsigned int __read_mostly sysctl_sched_autogroup_enabled = 1;
 static struct autogroup autogroup_default;
 static atomic_t autogroup_seq_nr;
+
+#ifdef CONFIG_SYSCTL
+static struct ctl_table sched_autogroup_sysctls[] = {
+	{
+		.procname       = "sched_autogroup_enabled",
+		.data           = &sysctl_sched_autogroup_enabled,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = SYSCTL_ONE,
+	},
+	{}
+};
+
+static void __init sched_autogroup_sysctl_init(void)
+{
+	register_sysctl_init("kernel", sched_autogroup_sysctls);
+}
+#else
+#define sched_autogroup_sysctl_init() do { } while (0)
+#endif
 
 void __init autogroup_init(struct task_struct *init_task)
 {
@@ -19,6 +36,7 @@ void __init autogroup_init(struct task_struct *init_task)
 	kref_init(&autogroup_default.kref);
 	init_rwsem(&autogroup_default.lock);
 	init_task->signal->autogroup = &autogroup_default;
+	sched_autogroup_sysctl_init();
 }
 
 void autogroup_free(struct task_group *tg)
@@ -35,7 +53,7 @@ static inline void autogroup_destroy(struct kref *kref)
 	ag->tg->rt_se = NULL;
 	ag->tg->rt_rq = NULL;
 #endif
-	sched_offline_group(ag->tg);
+	sched_release_group(ag->tg);
 	sched_destroy_group(ag->tg);
 }
 
@@ -143,7 +161,8 @@ autogroup_move_group(struct task_struct *p, struct autogroup *ag)
 	struct task_struct *t;
 	unsigned long flags;
 
-	BUG_ON(!lock_task_sighand(p, &flags));
+	if (WARN_ON_ONCE(!lock_task_sighand(p, &flags)))
+		return;
 
 	prev = p->signal->autogroup;
 	if (prev == ag) {
@@ -170,18 +189,19 @@ autogroup_move_group(struct task_struct *p, struct autogroup *ag)
 	autogroup_kref_put(prev);
 }
 
-/* Allocates GFP_KERNEL, cannot be called under any spinlock */
+/* Allocates GFP_KERNEL, cannot be called under any spinlock: */
 void sched_autogroup_create_attach(struct task_struct *p)
 {
 	struct autogroup *ag = autogroup_create();
 
 	autogroup_move_group(p, ag);
-	/* drop extra reference added by autogroup_create() */
+
+	/* Drop extra reference added by autogroup_create(): */
 	autogroup_kref_put(ag);
 }
 EXPORT_SYMBOL(sched_autogroup_create_attach);
 
-/* Cannot be called under siglock.  Currently has no users */
+/* Cannot be called under siglock. Currently has no users: */
 void sched_autogroup_detach(struct task_struct *p)
 {
 	autogroup_move_group(p, &autogroup_default);
@@ -204,7 +224,6 @@ static int __init setup_autogroup(char *str)
 
 	return 1;
 }
-
 __setup("noautogroup", setup_autogroup);
 
 #ifdef CONFIG_PROC_FS
@@ -226,7 +245,7 @@ int proc_sched_autogroup_set_nice(struct task_struct *p, int nice)
 	if (nice < 0 && !can_nice(current, nice))
 		return -EPERM;
 
-	/* this is a heavy operation taking global locks.. */
+	/* This is a heavy operation, taking global locks.. */
 	if (!capable(CAP_SYS_ADMIN) && time_before(jiffies, next))
 		return -EAGAIN;
 

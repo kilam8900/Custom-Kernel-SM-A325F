@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This contains encryption functions for per-file encryption.
  *
@@ -72,7 +73,7 @@ EXPORT_SYMBOL(fscrypt_free_bounce_page);
  * Generate the IV for the given logical block number within the given file.
  * For filenames encryption, lblk_num == 0.
  *
- * Keep this in sync with fscrypt_limit_dio_pages().  fscrypt_limit_dio_pages()
+ * Keep this in sync with fscrypt_limit_io_blocks().  fscrypt_limit_io_blocks()
  * needs to know about any IV generation methods where the low bits of IV don't
  * simply contain the lblk_num (e.g., IV_INO_LBLK_32).
  */
@@ -91,7 +92,7 @@ void fscrypt_generate_iv(union fscrypt_iv *iv, u64 lblk_num,
 		WARN_ON_ONCE(lblk_num > U32_MAX);
 		lblk_num = (u32)(ci->ci_hashed_ino + lblk_num);
 	} else if (flags & FSCRYPT_POLICY_FLAG_DIRECT_KEY) {
-		memcpy(iv->nonce, ci->ci_nonce, FS_KEY_DERIVATION_NONCE_SIZE);
+		memcpy(iv->nonce, ci->ci_nonce, FSCRYPT_FILE_NONCE_SIZE);
 	}
 	iv->lblk_num = cpu_to_le64(lblk_num);
 }
@@ -107,12 +108,12 @@ int fscrypt_crypt_block(const struct inode *inode, fscrypt_direction_t rw,
 	DECLARE_CRYPTO_WAIT(wait);
 	struct scatterlist dst, src;
 	struct fscrypt_info *ci = inode->i_crypt_info;
-	struct crypto_skcipher *tfm = ci->ci_key.tfm;
+	struct crypto_skcipher *tfm = ci->ci_enc_key.tfm;
 	int res = 0;
 
 	if (WARN_ON_ONCE(len <= 0))
 		return -EINVAL;
-	if (WARN_ON_ONCE(len % FS_CRYPTO_BLOCK_SIZE != 0))
+	if (WARN_ON_ONCE(len % FSCRYPT_CONTENTS_ALIGNMENT != 0))
 		return -EINVAL;
 
 	fscrypt_generate_iv(&iv, lblk_num, ci);
@@ -212,8 +213,8 @@ EXPORT_SYMBOL(fscrypt_encrypt_pagecache_blocks);
  * fscrypt_encrypt_block_inplace() - Encrypt a filesystem block in-place
  * @inode:     The inode to which this block belongs
  * @page:      The page containing the block to encrypt
- * @len:       Size of block to encrypt.  Doesn't need to be a multiple of the
- *		fs block size, but must be a multiple of FS_CRYPTO_BLOCK_SIZE.
+ * @len:       Size of block to encrypt.  This must be a multiple of
+ *		FSCRYPT_CONTENTS_ALIGNMENT.
  * @offs:      Byte offset within @page at which the block to encrypt begins
  * @lblk_num:  Filesystem logical block number of the block, i.e. the 0-based
  *		number of the block within the file
@@ -236,41 +237,43 @@ EXPORT_SYMBOL(fscrypt_encrypt_block_inplace);
 
 /**
  * fscrypt_decrypt_pagecache_blocks() - Decrypt filesystem blocks in a
- *					pagecache page
- * @page:      The locked pagecache page containing the block(s) to decrypt
+ *					pagecache folio
+ * @folio:     The locked pagecache folio containing the block(s) to decrypt
  * @len:       Total size of the block(s) to decrypt.  Must be a nonzero
  *		multiple of the filesystem's block size.
- * @offs:      Byte offset within @page of the first block to decrypt.  Must be
+ * @offs:      Byte offset within @folio of the first block to decrypt.  Must be
  *		a multiple of the filesystem's block size.
  *
- * The specified block(s) are decrypted in-place within the pagecache page,
- * which must still be locked and not uptodate.  Normally, blocksize ==
- * PAGE_SIZE and the whole page is decrypted at once.
+ * The specified block(s) are decrypted in-place within the pagecache folio,
+ * which must still be locked and not uptodate.
  *
- * This is for use by the filesystem's ->readpages() method.
+ * This is for use by the filesystem's ->readahead() method.
  *
  * Return: 0 on success; -errno on failure
  */
-int fscrypt_decrypt_pagecache_blocks(struct page *page, unsigned int len,
-				     unsigned int offs)
+int fscrypt_decrypt_pagecache_blocks(struct folio *folio, size_t len,
+				     size_t offs)
 {
-	const struct inode *inode = page->mapping->host;
+	const struct inode *inode = folio->mapping->host;
 	const unsigned int blockbits = inode->i_blkbits;
 	const unsigned int blocksize = 1 << blockbits;
-	u64 lblk_num = ((u64)page->index << (PAGE_SHIFT - blockbits)) +
+	u64 lblk_num = ((u64)folio->index << (PAGE_SHIFT - blockbits)) +
 		       (offs >> blockbits);
-	unsigned int i;
+	size_t i;
 	int err;
 
-	if (WARN_ON_ONCE(!PageLocked(page)))
+	if (WARN_ON_ONCE(!folio_test_locked(folio)))
 		return -EINVAL;
 
 	if (WARN_ON_ONCE(len <= 0 || !IS_ALIGNED(len | offs, blocksize)))
 		return -EINVAL;
 
 	for (i = offs; i < offs + len; i += blocksize, lblk_num++) {
+		struct page *page = folio_page(folio, i >> PAGE_SHIFT);
+
 		err = fscrypt_crypt_block(inode, FS_DECRYPT, lblk_num, page,
-					  page, blocksize, i, GFP_NOFS);
+					  page, blocksize, i & ~PAGE_MASK,
+					  GFP_NOFS);
 		if (err)
 			return err;
 	}
@@ -282,8 +285,8 @@ EXPORT_SYMBOL(fscrypt_decrypt_pagecache_blocks);
  * fscrypt_decrypt_block_inplace() - Decrypt a filesystem block in-place
  * @inode:     The inode to which this block belongs
  * @page:      The page containing the block to decrypt
- * @len:       Size of block to decrypt.  Doesn't need to be a multiple of the
- *		fs block size, but must be a multiple of FS_CRYPTO_BLOCK_SIZE.
+ * @len:       Size of block to decrypt.  This must be a multiple of
+ *		FSCRYPT_CONTENTS_ALIGNMENT.
  * @offs:      Byte offset within @page at which the block to decrypt begins
  * @lblk_num:  Filesystem logical block number of the block, i.e. the 0-based
  *		number of the block within the file
@@ -350,9 +353,11 @@ void fscrypt_msg(const struct inode *inode, const char *level,
 	va_start(args, fmt);
 	vaf.fmt = fmt;
 	vaf.va = &args;
-	if (inode)
+	if (inode && inode->i_ino)
 		printk("%sfscrypt (%s, inode %lu): %pV\n",
 		       level, inode->i_sb->s_id, inode->i_ino, &vaf);
+	else if (inode)
+		printk("%sfscrypt (%s): %pV\n", level, inode->i_sb->s_id, &vaf);
 	else
 		printk("%sfscrypt: %pV\n", level, &vaf);
 	va_end(args);
@@ -389,11 +394,6 @@ static int __init fscrypt_init(void)
 	if (err)
 		goto fail_free_info;
 
-#ifdef CONFIG_FSCRYPT_SDP
-	err = sdp_crypto_init();
-	if (!fscrypt_sdp_init_sdp_info_cachep())
-		goto fail_free_info;
-#endif
 	return 0;
 
 fail_free_info:

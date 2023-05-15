@@ -19,117 +19,28 @@
 
 #include "input-event-codes.h"
 
-#define SECLOG			"[sec_input]"
-
-#if !IS_ENABLED(CONFIG_INPUT_SEC_INPUT)
-/*
- * sec Log
- */
-
-#define INPUT_LOG_BUF_SIZE	512
-
-/*
- * sys/class/sec/tsp/support_feature
- * bit value should be made a promise with InputFramework.
- */
-#define INPUT_FEATURE_ENABLE_SETTINGS_AOT		(1 << 0) /* Double tap wakeup settings */
-#define INPUT_FEATURE_ENABLE_PRESSURE			(1 << 1) /* homekey pressure */
-#define INPUT_FEATURE_ENABLE_SYNC_RR120			(1 << 2) /* sync reportrate 120hz */
-#define INPUT_FEATURE_ENABLE_VRR			(1 << 3) /* variable refresh rate (support 240hz) */
-#define INPUT_FEATURE_ENABLE_SYSINPUT_ENABLED		(1 << 5) /* resume/suspend called by system input service */
-#define INPUT_FEATURE_ENABLE_PROX_LP_SCAN_ENABLED	(1 << 6) /* prox_lp_scan_mode called by system input service */
-
-#define INPUT_FEATURE_SUPPORT_OPEN_SHORT_TEST		(1 << 8) /* open/short test support */
-#define INPUT_FEATURE_SUPPORT_MIS_CALIBRATION_TEST	(1 << 9) /* mis-calibration test support */
-#define INPUT_FEATURE_ENABLE_MULTI_CALIBRATION		(1 << 10) /* multi calibration support */
-
-#ifdef CONFIG_SEC_DEBUG_TSP_LOG
-#include <linux/input/sec_tsp_log.h>
-
-#define input_dbg(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_dbg(dev, SECLOG fmt, ## __VA_ARGS__);				\
-	if (mode) {								\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s",	\
-					dev_driver_string(dev), dev_name(dev));	\
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL");	\
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-	}									\
-})
-#define input_info(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_info(dev, SECLOG fmt, ## __VA_ARGS__);				\
-	if (mode) {								\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s",	\
-					dev_driver_string(dev), dev_name(dev));	\
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL");	\
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-	}									\
-})
-#define input_err(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_err(dev, SECLOG fmt, ## __VA_ARGS__);				\
-	if (mode) {								\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s",	\
-					dev_driver_string(dev), dev_name(dev));	\
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL");	\
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-	}									\
-})
-#define input_raw_info(mode, dev, fmt, ...)					\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_info(dev, SECLOG fmt, ## __VA_ARGS__);				\
-	if (mode) { 							\
-		if (dev)							\
-			snprintf(input_log_buf, sizeof(input_log_buf), "%s %s", \
-					dev_driver_string(dev), dev_name(dev)); \
-		else								\
-			snprintf(input_log_buf, sizeof(input_log_buf), "NULL"); \
-		sec_debug_tsp_log_msg(input_log_buf, fmt, ## __VA_ARGS__);	\
-		sec_debug_tsp_raw_data_msg(input_log_buf, fmt, ## __VA_ARGS__); \
-	}									\
-})
-#define input_log_fix() {}
-#define input_raw_data_clear() sec_tsp_raw_data_clear()
-#else
-#define input_dbg(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_dbg(dev, SECLOG fmt, ## __VA_ARGS__);				\
-})
-#define input_info(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_info(dev, SECLOG fmt, ## __VA_ARGS__);				\
-})
-#define input_err(mode, dev, fmt, ...)						\
-({										\
-	static char input_log_buf[INPUT_LOG_BUF_SIZE];				\
-	dev_err(dev, SECLOG fmt, ## __VA_ARGS__);				\
-})
-#define input_raw_info(mode, dev, fmt, ...) input_info(mode, dev, fmt, ## __VA_ARGS__)
-#define input_log_fix() {}
-#define input_raw_data_clear() sec_tsp_raw_data_clear()
-#endif
-#endif
-
-
 /*
  * The event structure itself
+ * Note that __USE_TIME_BITS64 is defined by libc based on
+ * application's request to use 64 bit time_t.
  */
 
 struct input_event {
+#if (__BITS_PER_LONG != 32 || !defined(__USE_TIME_BITS64)) && !defined(__KERNEL__)
 	struct timeval time;
+#define input_event_sec time.tv_sec
+#define input_event_usec time.tv_usec
+#else
+	__kernel_ulong_t __sec;
+#if defined(__sparc__) && defined(__arch64__)
+	unsigned int __usec;
+	unsigned int __pad;
+#else
+	__kernel_ulong_t __usec;
+#endif
+#define input_event_sec  __sec
+#define input_event_usec __usec
+#endif
 	__u16 type;
 	__u16 code;
 	__s32 value;
@@ -167,13 +78,16 @@ struct input_id {
  * Note that input core does not clamp reported values to the
  * [minimum, maximum] limits, such task is left to userspace.
  *
- * The default resolution for main axes (ABS_X, ABS_Y, ABS_Z)
- * is reported in units per millimeter (units/mm), resolution
- * for rotational axes (ABS_RX, ABS_RY, ABS_RZ) is reported
- * in units per radian.
+ * The default resolution for main axes (ABS_X, ABS_Y, ABS_Z,
+ * ABS_MT_POSITION_X, ABS_MT_POSITION_Y) is reported in units
+ * per millimeter (units/mm), resolution for rotational axes
+ * (ABS_RX, ABS_RY, ABS_RZ) is reported in units per radian.
+ * The resolution for the size axes (ABS_MT_TOUCH_MAJOR,
+ * ABS_MT_TOUCH_MINOR, ABS_MT_WIDTH_MAJOR, ABS_MT_WIDTH_MINOR)
+ * is reported in units per millimeter (units/mm).
  * When INPUT_PROP_ACCELEROMETER is set the resolution changes.
  * The main axes (ABS_X, ABS_Y, ABS_Z) are then reported in
- * in units per g (units/g) and in units per degree per second
+ * units per g (units/g) and in units per degree per second
  * (units/deg/s) for rotational axes (ABS_RX, ABS_RY, ABS_RZ).
  */
 struct input_absinfo {
@@ -360,14 +274,16 @@ struct input_mask {
 #define BUS_RMI			0x1D
 #define BUS_CEC			0x1E
 #define BUS_INTEL_ISHTP		0x1F
+#define BUS_AMD_SFH		0x20
 
 /*
  * MT_TOOL types
  */
-#define MT_TOOL_FINGER		0
-#define MT_TOOL_PEN		1
-#define MT_TOOL_PALM		2
-#define MT_TOOL_MAX		2
+#define MT_TOOL_FINGER		0x00
+#define MT_TOOL_PEN		0x01
+#define MT_TOOL_PALM		0x02
+#define MT_TOOL_DIAL		0x0a
+#define MT_TOOL_MAX		0x0f
 
 /*
  * Values describing the status of a force-feedback effect

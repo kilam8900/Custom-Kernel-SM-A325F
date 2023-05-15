@@ -1,4 +1,5 @@
-/* p80211req.h
+/* SPDX-License-Identifier: (GPL-2.0 OR MPL-1.1) */
+/*
  *
  * Request handling functions
  *

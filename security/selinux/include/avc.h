@@ -20,12 +20,6 @@
 #include "av_permissions.h"
 #include "security.h"
 
-#ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-extern int selinux_enforcing;
-#else
-#define selinux_enforcing 1
-#endif
-
 /*
  * An entry in the AVC.
  */
@@ -59,7 +53,7 @@ struct selinux_audit_data {
 	u32 denied;
 	int result;
 	struct selinux_state *state;
-};
+} __randomize_layout;
 
 /*
  * AVC operations
@@ -106,11 +100,11 @@ static inline u32 avc_audit_required(u32 requested,
 int slow_avc_audit(struct selinux_state *state,
 		   u32 ssid, u32 tsid, u16 tclass,
 		   u32 requested, u32 audited, u32 denied, int result,
-		   struct common_audit_data *a,
-		   unsigned flags);
+		   struct common_audit_data *a);
 
 /**
  * avc_audit - Audit the granting or denial of permissions.
+ * @state: SELinux state
  * @ssid: source security identifier
  * @tsid: target security identifier
  * @tclass: target security class
@@ -118,7 +112,6 @@ int slow_avc_audit(struct selinux_state *state,
  * @avd: access vector decisions
  * @result: result from avc_has_perm_noaudit
  * @a:  auxiliary audit data
- * @flags: VFS walk flags
  *
  * Audit the granting or denial of permissions in accordance
  * with the policy.  This function is typically called by
@@ -134,8 +127,7 @@ static inline int avc_audit(struct selinux_state *state,
 			    u16 tclass, u32 requested,
 			    struct av_decision *avd,
 			    int result,
-			    struct common_audit_data *a,
-			    int flags)
+			    struct common_audit_data *a)
 {
 	u32 audited, denied;
 	audited = avc_audit_required(requested, avd, result, 0, &denied);
@@ -143,7 +135,7 @@ static inline int avc_audit(struct selinux_state *state,
 		return 0;
 	return slow_avc_audit(state, ssid, tsid, tclass,
 			      requested, audited, denied, result,
-			      a, flags);
+			      a);
 }
 
 #define AVC_STRICT 1 /* Ignore permissive mode. */
@@ -158,11 +150,6 @@ int avc_has_perm(struct selinux_state *state,
 		 u32 ssid, u32 tsid,
 		 u16 tclass, u32 requested,
 		 struct common_audit_data *auditdata);
-int avc_has_perm_flags(struct selinux_state *state,
-		       u32 ssid, u32 tsid,
-		       u16 tclass, u32 requested,
-		       struct common_audit_data *auditdata,
-		       int flags);
 
 int avc_has_extended_perms(struct selinux_state *state,
 			   u32 ssid, u32 tsid, u16 tclass, u32 requested,
@@ -195,11 +182,6 @@ void avc_disable(void);
 
 #ifdef CONFIG_SECURITY_SELINUX_AVC_STATS
 DECLARE_PER_CPU(struct avc_cache_stats, avc_cache_stats);
-#endif
-
-#ifdef CONFIG_MTK_SELINUX_AEE_WARNING
-extern struct sk_buff *audit_get_skb(struct audit_buffer *ab);
-extern void __attribute__((weak)) mtk_audit_hook(char *data);
 #endif
 
 #endif /* _SELINUX_AVC_H_ */

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Core private header for the pin control subsystem
  *
@@ -5,17 +6,25 @@
  * Written on behalf of Linaro for ST-Ericsson
  *
  * Author: Linus Walleij <linus.walleij@linaro.org>
- *
- * License terms: GNU General Public License (GPL) version 2
  */
 
 #include <linux/kref.h>
+#include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/radix-tree.h>
-#include <linux/pinctrl/pinconf.h>
+#include <linux/types.h>
+
 #include <linux/pinctrl/machine.h>
 
+struct dentry;
+struct device;
+struct device_node;
+struct module;
+
+struct pinctrl;
+struct pinctrl_desc;
 struct pinctrl_gpio_range;
+struct pinctrl_state;
 
 /**
  * struct pinctrl_dev - pin control class device
@@ -154,7 +163,7 @@ struct pinctrl_setting {
  *	or pin, and each of these will increment the @usecount.
  * @mux_owner: The name of device that called pinctrl_get().
  * @mux_setting: The most recent selected mux setting for this pin, if any.
- * @gpio_owner: If pinctrl_request_gpio() was called for this pin, this is
+ * @gpio_owner: If pinctrl_gpio_request() was called for this pin, this is
  *	the name of the GPIO that "owns" this pin.
  */
 struct pin_desc {
@@ -218,12 +227,6 @@ int pinctrl_generic_add_group(struct pinctrl_dev *pctldev, const char *name,
 int pinctrl_generic_remove_group(struct pinctrl_dev *pctldev,
 				 unsigned int group_selector);
 
-static inline int
-pinctrl_generic_remove_last_group(struct pinctrl_dev *pctldev)
-{
-	return pinctrl_generic_remove_group(pctldev, pctldev->num_groups - 1);
-}
-
 #endif	/* CONFIG_GENERIC_PINCTRL_GROUPS */
 
 struct pinctrl_dev *get_pinctrl_dev_from_devname(const char *dev_name);
@@ -243,18 +246,14 @@ extern struct pinctrl_gpio_range *
 pinctrl_find_gpio_range_from_pin_nolock(struct pinctrl_dev *pctldev,
 					unsigned int pin);
 
-int pinctrl_register_map(const struct pinctrl_map *maps, unsigned num_maps,
-			 bool dup);
-void pinctrl_unregister_map(const struct pinctrl_map *map);
-
 extern int pinctrl_force_sleep(struct pinctrl_dev *pctldev);
 extern int pinctrl_force_default(struct pinctrl_dev *pctldev);
 
 extern struct mutex pinctrl_maps_mutex;
 extern struct list_head pinctrl_maps;
 
-#define for_each_maps(_maps_node_, _i_, _map_) \
-	list_for_each_entry(_maps_node_, &pinctrl_maps, node) \
-		for (_i_ = 0, _map_ = &_maps_node_->maps[_i_]; \
-			_i_ < _maps_node_->num_maps; \
-			_i_++, _map_ = &_maps_node_->maps[_i_])
+#define for_each_pin_map(_maps_node_, _map_)						\
+	list_for_each_entry(_maps_node_, &pinctrl_maps, node)				\
+		for (unsigned int __i = 0;						\
+		     __i < _maps_node_->num_maps && (_map_ = &_maps_node_->maps[__i]);	\
+		     __i++)

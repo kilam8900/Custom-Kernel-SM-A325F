@@ -1,16 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2015 MediaTek Inc.
  * Author: Hongzhou.Yang <hongzhou.yang@mediatek.com>
  *         Yingjoe Chen <yingjoe.chen@mediatek.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/init.h>
@@ -144,49 +136,41 @@ static const struct mtk_pin_drv_grp mt8127_pin_drv[] = {
 };
 
 static const struct mtk_pin_spec_pupd_set_samereg mt8127_spec_pupd[] = {
-	MTK_PIN_PUPD_SPEC_SR(33,  0xd90, 2, 0, 1, 0),	/* KPROW0 */
-	MTK_PIN_PUPD_SPEC_SR(34,  0xd90, 6, 4, 5, 0),	/* KPROW1 */
-	MTK_PIN_PUPD_SPEC_SR(35,  0xd90, 10, 8, 9, 0),	/* KPROW2 */
-	MTK_PIN_PUPD_SPEC_SR(36,  0xda0, 2, 0, 1, 0),	/* KPCOL0 */
-	MTK_PIN_PUPD_SPEC_SR(37,  0xda0, 6, 4, 5, 0),	/* KPCOL1 */
-	MTK_PIN_PUPD_SPEC_SR(38,  0xda0, 10, 8, 9, 0),	/* KPCOL2 */
-	MTK_PIN_PUPD_SPEC_SR(46,  0xdb0, 2, 0, 1, 0),	/* EINT14 */
-	MTK_PIN_PUPD_SPEC_SR(47,  0xdb0, 6, 4, 5, 0),	/* EINT15 */
-	MTK_PIN_PUPD_SPEC_SR(48,  0xdb0, 10, 8, 9, 0),	/* EINT16 */
-	MTK_PIN_PUPD_SPEC_SR(49,  0xdb0, 14, 12, 13, 0),/* EINT17 */
-	MTK_PIN_PUPD_SPEC_SR(85,  0xce0, 8, 10, 9, 0),	/* MSDC2_CMD */
-	MTK_PIN_PUPD_SPEC_SR(86,  0xcd0, 8, 10, 9, 0),	/* MSDC2_CLK */
-	MTK_PIN_PUPD_SPEC_SR(87,  0xd00, 0, 2, 1, 0),	/* MSDC2_DAT0 */
-	MTK_PIN_PUPD_SPEC_SR(88,  0xd00, 4, 6, 5, 0),	/* MSDC2_DAT1 */
-	MTK_PIN_PUPD_SPEC_SR(89,  0xd00, 8, 10, 9, 0),	/* MSDC2_DAT2 */
-	MTK_PIN_PUPD_SPEC_SR(90,  0xd00, 12, 14, 13, 0),/* MSDC2_DAT3 */
-	MTK_PIN_PUPD_SPEC_SR(121, 0xc80, 8, 10, 9, 0),	/* MSDC1_CMD */
-	MTK_PIN_PUPD_SPEC_SR(122, 0xc70, 8, 10, 9, 0),	/* MSDC1_CLK */
-	MTK_PIN_PUPD_SPEC_SR(123, 0xca0, 0, 2, 1, 0),	/* MSDC1_DAT0 */
-	MTK_PIN_PUPD_SPEC_SR(124, 0xca0, 4, 6, 5, 0),	/* MSDC1_DAT1 */
-	MTK_PIN_PUPD_SPEC_SR(125, 0xca0, 8, 10, 9, 0),	/* MSDC1_DAT2 */
-	MTK_PIN_PUPD_SPEC_SR(126, 0xca0, 12, 14, 13, 0),/* MSDC1_DAT3 */
-	MTK_PIN_PUPD_SPEC_SR(127, 0xc40, 12, 14, 13, 0),/* MSDC0_DAT7 */
-	MTK_PIN_PUPD_SPEC_SR(128, 0xc40, 8, 10, 9, 0),	/* MSDC0_DAT6 */
-	MTK_PIN_PUPD_SPEC_SR(129, 0xc40, 4, 6, 5, 0),	/* MSDC0_DAT5 */
-	MTK_PIN_PUPD_SPEC_SR(130, 0xc40, 0, 2, 1, 0),	/* MSDC0_DAT4 */
-	MTK_PIN_PUPD_SPEC_SR(131, 0xc50, 0, 2, 1, 0),	/* MSDC0_RSTB */
-	MTK_PIN_PUPD_SPEC_SR(132, 0xc10, 8, 10, 9, 0),	/* MSDC0_CMD */
-	MTK_PIN_PUPD_SPEC_SR(133, 0xc00, 8, 10, 9, 0),	/* MSDC0_CLK */
-	MTK_PIN_PUPD_SPEC_SR(134, 0xc30, 12, 14, 13, 0),/* MSDC0_DAT3 */
-	MTK_PIN_PUPD_SPEC_SR(135, 0xc30, 8, 10, 9, 0),	/* MSDC0_DAT2 */
-	MTK_PIN_PUPD_SPEC_SR(136, 0xc30, 4, 6, 5, 0),	/* MSDC0_DAT1 */
-	MTK_PIN_PUPD_SPEC_SR(137, 0xc30, 0, 2, 1, 0),	/* MSDC0_DAT0 */
-	MTK_PIN_PUPD_SPEC_SR(142, 0xdc0, 2, 0, 1, 0),	/* EINT21 */
+	MTK_PIN_PUPD_SPEC_SR(33,  0xd90, 2, 0, 1),	/* KPROW0 */
+	MTK_PIN_PUPD_SPEC_SR(34,  0xd90, 6, 4, 5),	/* KPROW1 */
+	MTK_PIN_PUPD_SPEC_SR(35,  0xd90, 10, 8, 9),	/* KPROW2 */
+	MTK_PIN_PUPD_SPEC_SR(36,  0xda0, 2, 0, 1),	/* KPCOL0 */
+	MTK_PIN_PUPD_SPEC_SR(37,  0xda0, 6, 4, 5),	/* KPCOL1 */
+	MTK_PIN_PUPD_SPEC_SR(38,  0xda0, 10, 8, 9),	/* KPCOL2 */
+	MTK_PIN_PUPD_SPEC_SR(46,  0xdb0, 2, 0, 1),	/* EINT14 */
+	MTK_PIN_PUPD_SPEC_SR(47,  0xdb0, 6, 4, 5),	/* EINT15 */
+	MTK_PIN_PUPD_SPEC_SR(48,  0xdb0, 10, 8, 9),	/* EINT16 */
+	MTK_PIN_PUPD_SPEC_SR(49,  0xdb0, 14, 12, 13),	/* EINT17 */
+	MTK_PIN_PUPD_SPEC_SR(85,  0xce0, 8, 10, 9),	/* MSDC2_CMD */
+	MTK_PIN_PUPD_SPEC_SR(86,  0xcd0, 8, 10, 9),	/* MSDC2_CLK */
+	MTK_PIN_PUPD_SPEC_SR(87,  0xd00, 0, 2, 1),	/* MSDC2_DAT0 */
+	MTK_PIN_PUPD_SPEC_SR(88,  0xd00, 4, 6, 5),	/* MSDC2_DAT1 */
+	MTK_PIN_PUPD_SPEC_SR(89,  0xd00, 8, 10, 9),	/* MSDC2_DAT2 */
+	MTK_PIN_PUPD_SPEC_SR(90,  0xd00, 12, 14, 13),	/* MSDC2_DAT3 */
+	MTK_PIN_PUPD_SPEC_SR(121, 0xc80, 8, 10, 9),	/* MSDC1_CMD */
+	MTK_PIN_PUPD_SPEC_SR(122, 0xc70, 8, 10, 9),	/* MSDC1_CLK */
+	MTK_PIN_PUPD_SPEC_SR(123, 0xca0, 0, 2, 1),	/* MSDC1_DAT0 */
+	MTK_PIN_PUPD_SPEC_SR(124, 0xca0, 4, 6, 5),	/* MSDC1_DAT1 */
+	MTK_PIN_PUPD_SPEC_SR(125, 0xca0, 8, 10, 9),	/* MSDC1_DAT2 */
+	MTK_PIN_PUPD_SPEC_SR(126, 0xca0, 12, 14, 13),	/* MSDC1_DAT3 */
+	MTK_PIN_PUPD_SPEC_SR(127, 0xc40, 12, 14, 13),	/* MSDC0_DAT7 */
+	MTK_PIN_PUPD_SPEC_SR(128, 0xc40, 8, 10, 9),	/* MSDC0_DAT6 */
+	MTK_PIN_PUPD_SPEC_SR(129, 0xc40, 4, 6, 5),	/* MSDC0_DAT5 */
+	MTK_PIN_PUPD_SPEC_SR(130, 0xc40, 0, 2, 1),	/* MSDC0_DAT4 */
+	MTK_PIN_PUPD_SPEC_SR(131, 0xc50, 0, 2, 1),	/* MSDC0_RSTB */
+	MTK_PIN_PUPD_SPEC_SR(132, 0xc10, 8, 10, 9),	/* MSDC0_CMD */
+	MTK_PIN_PUPD_SPEC_SR(133, 0xc00, 8, 10, 9),	/* MSDC0_CLK */
+	MTK_PIN_PUPD_SPEC_SR(134, 0xc30, 12, 14, 13),	/* MSDC0_DAT3 */
+	MTK_PIN_PUPD_SPEC_SR(135, 0xc30, 8, 10, 9),	/* MSDC0_DAT2 */
+	MTK_PIN_PUPD_SPEC_SR(136, 0xc30, 4, 6, 5),	/* MSDC0_DAT1 */
+	MTK_PIN_PUPD_SPEC_SR(137, 0xc30, 0, 2, 1),	/* MSDC0_DAT0 */
+	MTK_PIN_PUPD_SPEC_SR(142, 0xdc0, 2, 0, 1),	/* EINT21 */
 };
-
-static int mt8127_spec_pull_set(struct mtk_pinctrl *pctl,
-		struct regmap *regmap, unsigned int pin,
-		unsigned char align, bool isup, unsigned int r1r0)
-{
-	return mtk_pctrl_spec_pull_set_samereg(pctl, regmap, mt8127_spec_pupd,
-		ARRAY_SIZE(mt8127_spec_pupd), pin, align, isup, r1r0);
-}
 
 static const struct mtk_pin_ies_smt_set mt8127_ies_set[] = {
 	MTK_PIN_IES_SMT_SPEC(0, 9, 0x900, 0),
@@ -268,20 +252,6 @@ static const struct mtk_pin_ies_smt_set mt8127_smt_set[] = {
 	MTK_PIN_IES_SMT_SPEC(142, 142, 0x920, 13),
 };
 
-static int mt8127_ies_smt_set(struct mtk_pinctrl *pctl,
-		struct regmap *regmap, unsigned int pin,
-		unsigned char align, int value, enum pin_config_param arg)
-{
-	if (arg == PIN_CONFIG_INPUT_ENABLE)
-		return mtk_pconf_spec_set_ies_smt_range(regmap, mt8127_ies_set,
-			ARRAY_SIZE(mt8127_ies_set), pin, align, value);
-	else if (arg == PIN_CONFIG_INPUT_SCHMITT_ENABLE)
-		return mtk_pconf_spec_set_ies_smt_range(regmap, mt8127_smt_set,
-			ARRAY_SIZE(mt8127_smt_set), pin, align, value);
-	return -EINVAL;
-}
-
-
 static const struct mtk_pinctrl_devdata mt8127_pinctrl_data = {
 	.pins = mtk_pins_mt8127,
 	.npins = ARRAY_SIZE(mtk_pins_mt8127),
@@ -289,8 +259,14 @@ static const struct mtk_pinctrl_devdata mt8127_pinctrl_data = {
 	.n_grp_cls = ARRAY_SIZE(mt8127_drv_grp),
 	.pin_drv_grp = mt8127_pin_drv,
 	.n_pin_drv_grps = ARRAY_SIZE(mt8127_pin_drv),
-	.spec_pull_set = mt8127_spec_pull_set,
-	.spec_ies_smt_set = mt8127_ies_smt_set,
+	.spec_ies = mt8127_ies_set,
+	.n_spec_ies = ARRAY_SIZE(mt8127_ies_set),
+	.spec_pupd = mt8127_spec_pupd,
+	.n_spec_pupd = ARRAY_SIZE(mt8127_spec_pupd),
+	.spec_smt = mt8127_smt_set,
+	.n_spec_smt = ARRAY_SIZE(mt8127_smt_set),
+	.spec_pull_set = mtk_pctrl_spec_pull_set_samereg,
+	.spec_ies_smt_set = mtk_pconf_spec_set_ies_smt_range,
 	.dir_offset = 0x0000,
 	.pullen_offset = 0x0100,
 	.pullsel_offset = 0x0200,
@@ -299,50 +275,28 @@ static const struct mtk_pinctrl_devdata mt8127_pinctrl_data = {
 	.pinmux_offset = 0x0600,
 	.type1_start = 143,
 	.type1_end = 143,
-	.regmap_num = 1,
 	.port_shf = 4,
 	.port_mask = 0xf,
 	.port_align = 4,
-	.port_pin_shf = 4,
-	.eint_offsets = {
-		.name = "mt8127_eint",
-		.stat      = 0x000,
-		.ack       = 0x040,
-		.mask      = 0x080,
-		.mask_set  = 0x0c0,
-		.mask_clr  = 0x100,
-		.sens      = 0x140,
-		.sens_set  = 0x180,
-		.sens_clr  = 0x1c0,
-		.soft      = 0x200,
-		.soft_set  = 0x240,
-		.soft_clr  = 0x280,
-		.pol       = 0x300,
-		.pol_set   = 0x340,
-		.pol_clr   = 0x380,
-		.dom_en    = 0x400,
-		.dbnc_ctrl = 0x500,
-		.dbnc_set  = 0x600,
-		.dbnc_clr  = 0x700,
+	.mode_mask = 0xf,
+	.mode_per_reg = 5,
+	.mode_shf = 4,
+	.eint_hw = {
 		.port_mask = 7,
 		.ports     = 6,
+		.ap_num    = 143,
+		.db_cnt    = 16,
+		.db_time = debounce_time_mt2701,
 	},
-	.ap_num = 143,
-	.db_cnt = 16,
 };
 
-static int mt8127_pinctrl_probe(struct platform_device *pdev)
-{
-	return mtk_pctrl_init(pdev, &mt8127_pinctrl_data, NULL);
-}
-
 static const struct of_device_id mt8127_pctrl_match[] = {
-	{ .compatible = "mediatek,mt8127-pinctrl", },
+	{ .compatible = "mediatek,mt8127-pinctrl", .data = &mt8127_pinctrl_data },
 	{ }
 };
 
 static struct platform_driver mtk_pinctrl_driver = {
-	.probe = mt8127_pinctrl_probe,
+	.probe = mtk_pctrl_common_probe,
 	.driver = {
 		.name = "mediatek-mt8127-pinctrl",
 		.of_match_table = mt8127_pctrl_match,

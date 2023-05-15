@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Driver for USB Mass Storage compliant devices
  *
@@ -25,23 +26,6 @@
  *
  * Also, for certain devices, the interrupt endpoint is used to convey
  * status of a command.
- *
- * Please see http://www.one-eyed-alien.net/~mdharm/linux-usb for more
- * information about this driver.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2, or (at your option) any
- * later version.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/sched.h>
@@ -63,10 +47,6 @@
 
 #include <linux/blkdev.h>
 #include "../../scsi/sd.h"
-#include "usb_boost.h"
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-#include "../core/usb.h"
-#endif
 
 
 /***********************************************************************
@@ -298,9 +278,6 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 		 */
 		if (usb_pipecontrol(pipe)) {
 			usb_stor_dbg(us, "-- stall on control pipe\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-			pr_err("usb storage -- stall on control pipe\n");
-#endif
 			return USB_STOR_XFER_STALLED;
 		}
 
@@ -314,41 +291,26 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 	/* babble - the device tried to send more than we wanted to read */
 	case -EOVERFLOW:
 		usb_stor_dbg(us, "-- babble\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- babble\n");
-#endif
 		return USB_STOR_XFER_LONG;
 
 	/* the transfer was cancelled by abort, disconnect, or timeout */
 	case -ECONNRESET:
 		usb_stor_dbg(us, "-- transfer cancelled\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- transfer cancelled\n");
-#endif
 		return USB_STOR_XFER_ERROR;
 
 	/* short scatter-gather read transfer */
 	case -EREMOTEIO:
 		usb_stor_dbg(us, "-- short read transfer\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- short read transfer\n");
-#endif
 		return USB_STOR_XFER_SHORT;
 
 	/* abort or disconnect in progress */
 	case -EIO:
 		usb_stor_dbg(us, "-- abort or disconnect in progress\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- abort or disconnect in progress\n");
-#endif
 		return USB_STOR_XFER_ERROR;
 
 	/* the catch-all error case */
 	default:
 		usb_stor_dbg(us, "-- unknown error\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- unknown error %d\n", result);
-#endif
 		return USB_STOR_XFER_ERROR;
 	}
 }
@@ -401,7 +363,7 @@ static int usb_stor_intr_transfer(struct us_data *us, void *buf,
 	usb_stor_dbg(us, "xfer %u bytes\n", length);
 
 	/* calculate the max packet size */
-	maxp = usb_maxpacket(us->pusb_dev, pipe, usb_pipeout(pipe));
+	maxp = usb_maxpacket(us->pusb_dev, pipe);
 	if (maxp > length)
 		maxp = length;
 
@@ -454,7 +416,7 @@ static int usb_stor_bulk_transfer_sglist(struct us_data *us, unsigned int pipe,
 
 	/* don't submit s-g requests during abort processing */
 	if (test_bit(US_FLIDX_ABORTING, &us->dflags))
-		return USB_STOR_XFER_ERROR;
+		goto usb_stor_xfer_error;
 
 	/* initialize the scatter-gather request block */
 	usb_stor_dbg(us, "xfer %u bytes, %d entries\n", length, num_sg);
@@ -462,7 +424,7 @@ static int usb_stor_bulk_transfer_sglist(struct us_data *us, unsigned int pipe,
 			sg, num_sg, length, GFP_NOIO);
 	if (result) {
 		usb_stor_dbg(us, "usb_sg_init returned %d\n", result);
-		return USB_STOR_XFER_ERROR;
+		goto usb_stor_xfer_error;
 	}
 
 	/*
@@ -490,6 +452,11 @@ static int usb_stor_bulk_transfer_sglist(struct us_data *us, unsigned int pipe,
 		*act_len = us->current_sg.bytes;
 	return interpret_urb_result(us, pipe, length, result,
 			us->current_sg.bytes);
+
+usb_stor_xfer_error:
+	if (act_len)
+		*act_len = 0;
+	return USB_STOR_XFER_ERROR;
 }
 
 /*
@@ -500,12 +467,7 @@ int usb_stor_bulk_srb(struct us_data* us, unsigned int pipe,
 		      struct scsi_cmnd* srb)
 {
 	unsigned int partial;
-	int result;
-
-#ifdef CONFIG_MEDIATEK_SOLUTION
-	usb_boost();
-#endif
-	result = usb_stor_bulk_transfer_sglist(us, pipe, scsi_sglist(srb),
+	int result = usb_stor_bulk_transfer_sglist(us, pipe, scsi_sglist(srb),
 				      scsi_sg_count(srb), scsi_bufflen(srb),
 				      &partial);
 
@@ -589,7 +551,7 @@ static void last_sector_hacks(struct us_data *us, struct scsi_cmnd *srb)
 	/* Did this command access the last sector? */
 	sector = (srb->cmnd[2] << 24) | (srb->cmnd[3] << 16) |
 			(srb->cmnd[4] << 8) | (srb->cmnd[5]);
-	disk = srb->request->rq_disk;
+	disk = scsi_cmd_to_rq(srb)->q->disk;
 	if (!disk)
 		goto done;
 	sdkp = scsi_disk(disk);
@@ -654,9 +616,6 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 */
 	if (test_bit(US_FLIDX_TIMED_OUT, &us->dflags)) {
 		usb_stor_dbg(us, "-- command was aborted\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- command was aborted\n");
-#endif
 		srb->result = DID_ABORT << 16;
 		goto Handle_Errors;
 	}
@@ -664,9 +623,6 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	/* if there is a transport error, reset and don't auto-sense */
 	if (result == USB_STOR_TRANSPORT_ERROR) {
 		usb_stor_dbg(us, "-- transport indicates error, resetting\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- transport indicates error, resetting\n");
-#endif
 		srb->result = DID_ERROR << 16;
 		goto Handle_Errors;
 	}
@@ -697,9 +653,13 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	if ((us->protocol == USB_PR_CB || us->protocol == USB_PR_DPCM_USB) &&
 			srb->sc_data_direction != DMA_FROM_DEVICE) {
 		usb_stor_dbg(us, "-- CB transport device requiring auto-sense\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		pr_err("usb storage -- sense after SYNC CACHE\n");
-#endif
+		need_auto_sense = 1;
+	}
+
+	/* Some devices (Kindle) require another command after SYNC CACHE */
+	if ((us->fflags & US_FL_SENSE_AFTER_SYNC) &&
+			srb->cmnd[0] == SYNCHRONIZE_CACHE) {
+		usb_stor_dbg(us, "-- sense after SYNC CACHE\n");
 		need_auto_sense = 1;
 	}
 
@@ -774,9 +734,6 @@ Retry_Sense:
 
 		if (test_bit(US_FLIDX_TIMED_OUT, &us->dflags)) {
 			usb_stor_dbg(us, "-- auto-sense aborted\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-			pr_err("usb storage -- auto-sense aborted\n");
-#endif
 			srb->result = DID_ABORT << 16;
 
 			/* If SANE_SENSE caused this problem, disable it */
@@ -805,9 +762,7 @@ Retry_Sense:
 		/* Other failures */
 		if (temp_result != USB_STOR_TRANSPORT_GOOD) {
 			usb_stor_dbg(us, "-- auto-sense failure\n");
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-			pr_err("usb storage -- auto-sense failure\n");
-#endif
+
 			/*
 			 * we skip the reset if this happens to be a
 			 * multi-target device, since failure of an
@@ -951,16 +906,11 @@ Retry_Sense:
 	 * Set the RESETTING bit, and clear the ABORTING bit so that
 	 * the reset may proceed.
 	 */
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-	printk(KERN_ERR "usb_storage: %s scsi_lock 1\n", __func__);
-#endif
 	scsi_lock(us_to_host(us));
 	set_bit(US_FLIDX_RESETTING, &us->dflags);
 	clear_bit(US_FLIDX_ABORTING, &us->dflags);
 	scsi_unlock(us_to_host(us));
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-	printk(KERN_ERR "usb_storage: %s scsi_unlock 1\n", __func__);
-#endif
+
 	/*
 	 * We must release the device lock because the pre_reset routine
 	 * will want to acquire it.
@@ -970,15 +920,9 @@ Retry_Sense:
 	mutex_lock(&us->dev_mutex);
 
 	if (result < 0) {
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		printk(KERN_ERR "usb_storage: %s scsi_lock 2\n", __func__);
-#endif
 		scsi_lock(us_to_host(us));
 		usb_stor_report_device_reset(us);
 		scsi_unlock(us_to_host(us));
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-		printk(KERN_ERR "usb_storage: %s scsi_unlock 2\n", __func__);
-#endif
 		us->transport_reset(us);
 	}
 	clear_bit(US_FLIDX_RESETTING, &us->dflags);
@@ -1234,7 +1178,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		/*
 		 * If the device tried to send back more data than the
 		 * amount requested, the spec requires us to transfer
-		 * the CSW anyway.  Since there's no point retrying the
+		 * the CSW anyway.  Since there's no point retrying
 		 * the command, we'll return fake sense data indicating
 		 * Illegal Request, Invalid Field in CDB.
 		 */
@@ -1352,8 +1296,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 		} else {
 			residue = min(residue, transfer_length);
-			scsi_set_resid(srb, max(scsi_get_resid(srb),
-			                                       (int) residue));
+			scsi_set_resid(srb, max(scsi_get_resid(srb), residue));
 		}
 	}
 
@@ -1497,24 +1440,9 @@ int usb_stor_port_reset(struct us_data *us)
 			result = -EIO;
 			usb_stor_dbg(us, "No reset during disconnect\n");
 		} else {
-#ifdef CONFIG_USB_HOST_SAMSUNG_FEATURE
-			if (test_bit(US_FLIDX_TIMED_OUT, &us->dflags)) {
-#ifdef CONFIG_USB_DEBUG_DETAILED_LOG
-				printk(KERN_ERR "usb_storage: %s remove device\n",
-					__func__);
-#endif
-				result = usb_remove_device(us->pusb_dev);
-
-			} else {
-				result = usb_reset_device(us->pusb_dev);
-				usb_stor_dbg(us, "usb_reset_device returns %d\n",
-					     result);
-			}
-#else
 			result = usb_reset_device(us->pusb_dev);
 			usb_stor_dbg(us, "usb_reset_device returns %d\n",
 				     result);
-#endif /* CONFIG_USB_STORAGE_DETECT */
 		}
 		usb_unlock_device(us->pusb_dev);
 	}

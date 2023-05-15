@@ -1,36 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2014  Google, Inc.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/uaccess.h>
+#include <linux/rtmutex.h>
 #include "internal.h"
-#ifdef CONFIG_SEC_EXT
-#include <linux/sec_ext.h>
-#endif
 
-static DEFINE_MUTEX(pmsg_lock);
+static DEFINE_RT_MUTEX(pmsg_lock);
 
 static ssize_t write_pmsg(struct file *file, const char __user *buf,
 			  size_t count, loff_t *ppos)
 {
 	struct pstore_record record;
 	int ret;
-#ifdef CONFIG_SEC_EXT
-	char sec_buf[256];
-	size_t sec_count = 0;
-#endif
 
 	if (!count)
 		return 0;
@@ -40,20 +26,12 @@ static ssize_t write_pmsg(struct file *file, const char __user *buf,
 	record.size = count;
 
 	/* check outside lock, page in any data. write_user also checks */
-	if (!access_ok(VERIFY_READ, buf, count))
+	if (!access_ok(buf, count))
 		return -EFAULT;
 
-	mutex_lock(&pmsg_lock);
-#ifdef CONFIG_SEC_EXT
-	if (count > 256)
-		sec_count = 256;
-	else
-		sec_count = count;
-
-	__copy_from_user(sec_buf, buf, sec_count);
-#endif /* CONFIG_SEC_EXT */
+	rt_mutex_lock(&pmsg_lock);
 	ret = psinfo->write_user(&record, buf);
-	mutex_unlock(&pmsg_lock);
+	rt_mutex_unlock(&pmsg_lock);
 	return ret ? ret : count;
 }
 
@@ -69,7 +47,7 @@ static int pmsg_major;
 #undef pr_fmt
 #define pr_fmt(fmt) PMSG_NAME ": " fmt
 
-static char *pmsg_devnode(struct device *dev, umode_t *mode)
+static char *pmsg_devnode(const struct device *dev, umode_t *mode)
 {
 	if (mode)
 		*mode = 0220;

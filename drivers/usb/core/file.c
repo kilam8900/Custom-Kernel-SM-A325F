@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/usb/core/file.c
  *
@@ -14,7 +15,6 @@
  * (C) Copyright Greg Kroah-Hartman 2002-2003
  *
  * Released under the GPLv2 only.
- * SPDX-License-Identifier: GPL-2.0
  */
 
 #include <linux/module.h>
@@ -62,7 +62,7 @@ static struct usb_class {
 	struct class *class;
 } *usb_class;
 
-static char *usb_devnode(struct device *dev, umode_t *mode)
+static char *usb_devnode(const struct device *dev, umode_t *mode)
 {
 	struct usb_class_driver *drv;
 

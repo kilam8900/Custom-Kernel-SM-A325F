@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * bpf-script-test-prologue.c
  * Test BPF prologue
@@ -18,6 +19,8 @@
 #ifdef if
 # undef if
 #endif
+
+typedef unsigned int __bitwise fmode_t;
 
 #define FMODE_READ		0x1
 #define FMODE_WRITE		0x2

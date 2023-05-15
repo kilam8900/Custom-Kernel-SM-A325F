@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/drivers/input/keyboard/pxa27x_keypad.c
  *
@@ -9,10 +10,6 @@
  * Based on a previous implementations by Kevin O'Connor
  * <kevin_at_koconnor.net> and Alex Osborne <bobofdoom@gmail.com> and
  * on some suggestions by Nicolas Pitre <nico@fluxnic.net>.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 
@@ -663,7 +660,6 @@ static void pxa27x_keypad_close(struct input_dev *dev)
 	clk_disable_unprepare(keypad->clk);
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int pxa27x_keypad_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -697,7 +693,7 @@ static int pxa27x_keypad_resume(struct device *dev)
 	} else {
 		mutex_lock(&input_dev->mutex);
 
-		if (input_dev->users) {
+		if (input_device_enabled(input_dev)) {
 			/* Enable unit clock */
 			ret = clk_prepare_enable(keypad->clk);
 			if (!ret)
@@ -709,10 +705,9 @@ static int pxa27x_keypad_resume(struct device *dev)
 
 	return ret;
 }
-#endif
 
-static SIMPLE_DEV_PM_OPS(pxa27x_keypad_pm_ops,
-			 pxa27x_keypad_suspend, pxa27x_keypad_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(pxa27x_keypad_pm_ops,
+				pxa27x_keypad_suspend, pxa27x_keypad_resume);
 
 
 static int pxa27x_keypad_probe(struct platform_device *pdev)
@@ -730,10 +725,8 @@ static int pxa27x_keypad_probe(struct platform_device *pdev)
 		return -EINVAL;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "failed to get keypad irq\n");
+	if (irq < 0)
 		return -ENXIO;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (res == NULL) {
@@ -835,7 +828,7 @@ static struct platform_driver pxa27x_keypad_driver = {
 	.driver		= {
 		.name	= "pxa27x-keypad",
 		.of_match_table = of_match_ptr(pxa27x_keypad_dt_match),
-		.pm	= &pxa27x_keypad_pm_ops,
+		.pm	= pm_sleep_ptr(&pxa27x_keypad_pm_ops),
 	},
 };
 module_platform_driver(pxa27x_keypad_driver);

@@ -1,25 +1,12 @@
-/*
- *  sound/soc/codecs/mt6660.c
- *  Driver to Mediatek MT6660 SPKAMP IC
- *
- *  Copyright (C) 2018 Mediatek Inc.
- *  cy_huang <cy_huang@richtek.com>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2 as
- *  published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
- *  See http://www.gnu.org/licenses/gpl-2.0.html for more details.
- */
+// SPDX-License-Identifier: GPL-2.0
+
+// Copyright (c) 2019 MediaTek Inc.
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/version.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
+#include <linux/pm_runtime.h>
 #include <linux/delay.h>
 #include <sound/soc.h>
 #include <sound/tlv.h>
@@ -27,317 +14,146 @@
 
 #include "mt6660.h"
 
-struct codec_reg_val {
+struct reg_size_table {
 	u32 addr;
-	u32 mask;
-	u32 data;
+	u8 size;
 };
 
-static const struct codec_reg_val e4_reg_inits[] = {
-	{ MT6660_REG_WDT_CTRL, 0x80, 0x00 },
-	{ MT6660_REG_SPS_CTRL, 0x01, 0x00 },
-	{ MT6660_REG_AUDIO_IN2_SEL, 0x1c, 0x04 },
-	{ MT6660_REG_RESV11, 0x0c, 0x00 },
-	{ MT6660_REG_RESV31, 0x03, 0x03 },
-	{ MT6660_REG_RESV40, 0x01, 0x00 },
-	{ MT6660_REG_RESV0, 0x44, 0x04 },
-	{ MT6660_REG_RESV19, 0xff, 0x82 },
-	{ MT6660_REG_RESV17, 0x7777, 0x7273 },
-	{ MT6660_REG_RESV16, 0x07, 0x03 },
-	{ MT6660_REG_DRE_CORASE, 0xe0, 0x20 },
-	{ MT6660_REG_ADDA_CLOCK, 0xff, 0x70 },
-	{ MT6660_REG_RESV21, 0xff, 0x20 },
-	{ MT6660_REG_DRE_THDMODE, 0xff, 0x40 },
-	{ MT6660_REG_RESV23, 0xffff, 0x17f8 },
-	{ MT6660_REG_PWM_CTRL, 0xff, 0x15 },
-	{ MT6660_REG_ADC_USB_MODE, 0xff, 0x00 },
-	{ MT6660_REG_PROTECTION_CFG, 0xff, 0x1d },
-	{ MT6660_REG_HPF1_COEF, 0xffffffff, 0x7fdb7ffe },
-	{ MT6660_REG_HPF2_COEF, 0xffffffff, 0x7fdb7ffe },
-	{ MT6660_REG_SIG_GAIN, 0xff, 0x58 },
-	{ MT6660_REG_RESV6, 0xff, 0xce },
-	{ MT6660_REG_SIGMAX, 0xffff, 0x7fff },
-	{ MT6660_REG_DA_GAIN, 0xffff, 0x0116 },
-	{ MT6660_REG_TDM_CFG3, 0x1800, 0x0800 },
-	{ MT6660_REG_DRE_CTRL, 0x1f, 0x07 },
+static const struct reg_size_table mt6660_reg_size_table[] = {
+	{ MT6660_REG_HPF1_COEF, 4 },
+	{ MT6660_REG_HPF2_COEF, 4 },
+	{ MT6660_REG_TDM_CFG3, 2 },
+	{ MT6660_REG_RESV17, 2 },
+	{ MT6660_REG_RESV23, 2 },
+	{ MT6660_REG_SIGMAX, 2 },
+	{ MT6660_REG_DEVID, 2 },
+	{ MT6660_REG_HCLIP_CTRL, 2 },
+	{ MT6660_REG_DA_GAIN, 2 },
 };
 
-static unsigned int mt6660_codec_io_read(struct snd_soc_codec *codec,
-					 unsigned int reg)
+static int mt6660_get_reg_size(uint32_t addr)
 {
-#ifdef CONFIG_RT_REGMAP
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	u8 reg_addr = MT6660_GET_ADDR(reg), reg_size = MT6660_GET_SIZE(reg);
-	struct rt_reg_data rrd = {0};
-	int ret = 0;
+	int i;
 
-	dev_dbg(codec->dev,
-		"%s: reg=0x%02x, size %d\n", __func__, reg_addr, reg_size);
-	if (reg_size > 4 || reg_size == 0) {
-		dev_err(codec->dev, "not invalid reg size %d\n", reg_size);
-		return -ENOTSUPP;
+	for (i = 0; i < ARRAY_SIZE(mt6660_reg_size_table); i++) {
+		if (mt6660_reg_size_table[i].addr == addr)
+			return mt6660_reg_size_table[i].size;
 	}
-	ret = rt_regmap_reg_read(chip->regmap, &rrd, reg_addr);
-	return ret < 0 ? ret : rrd.rt_data.data_u32;
-#else
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	u8 reg_addr = MT6660_GET_ADDR(reg), reg_size = MT6660_GET_SIZE(reg);
-	u8 data[4] = {0};
+	return 1;
+}
+
+static int mt6660_reg_write(void *context, unsigned int reg, unsigned int val)
+{
+	struct mt6660_chip *chip = context;
+	int size = mt6660_get_reg_size(reg);
+	u8 reg_data[4];
+	int i;
+
+	for (i = 0; i < size; i++)
+		reg_data[size - i - 1] = (val >> (8 * i)) & 0xff;
+
+	return i2c_smbus_write_i2c_block_data(chip->i2c, reg, size, reg_data);
+}
+
+static int mt6660_reg_read(void *context, unsigned int reg, unsigned int *val)
+{
+	struct mt6660_chip *chip = context;
+	int size = mt6660_get_reg_size(reg);
+	int i, ret;
+	u8 data[4];
 	u32 reg_data = 0;
-	int i, ret = 0;
 
-	dev_dbg(codec->dev,
-		"%s: reg=0x%02x, size %d\n", __func__, reg_addr, reg_size);
-	if (reg_size > 4 || reg_size == 0) {
-		dev_err(codec->dev, "not invalid reg size %d\n", reg_size);
-		return -ENOTSUPP;
-	}
-	ret = i2c_smbus_read_i2c_block_data(chip->i2c, reg_addr,
-					    reg_size, data);
+	ret = i2c_smbus_read_i2c_block_data(chip->i2c, reg, size, data);
 	if (ret < 0)
 		return ret;
-	for (i = 0; i < reg_size; i++) {
+	for (i = 0; i < size; i++) {
 		reg_data <<= 8;
 		reg_data |= data[i];
 	}
-	return reg_data;
-#endif /* CONFIG_RT_REGMAP */
-}
-
-static int mt6660_codec_io_write(struct snd_soc_codec *codec,
-				 unsigned int reg, unsigned int data)
-{
-#ifdef CONFIG_RT_REGMAP
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	u8 reg_addr = MT6660_GET_ADDR(reg), reg_size = MT6660_GET_SIZE(reg);
-	struct rt_reg_data rrd = {0};
-
-	dev_dbg(codec->dev, "%s: reg=0x%02x, size %d, data=0x%08x\n",
-		__func__, reg_addr, reg_size, data);
-	if (reg_size > 4 || reg_size == 0) {
-		dev_err(codec->dev, "not invalid reg size %d\n", reg_size);
-		return -ENOTSUPP;
-	}
-	return rt_regmap_reg_write(chip->regmap, &rrd, reg_addr, data);
-#else
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	u8 reg_addr = MT6660_GET_ADDR(reg), reg_size = MT6660_GET_SIZE(reg);
-	u8 reg_data[4] = {0};
-	int i;
-
-	dev_dbg(codec->dev, "%s: reg=0x%02x, size %d, data=0x%08x\n",
-		__func__, reg_addr, reg_size, data);
-	if (reg_size > 4 || reg_size == 0) {
-		dev_err(codec->dev, "not invalid reg size %d\n", reg_size);
-		return -ENOTSUPP;
-	}
-	for (i = 0; i < reg_size; i++)
-		reg_data[reg_size - i - 1] = (data >> (8 * i)) & 0xff;
-	return i2c_smbus_write_i2c_block_data(chip->i2c, reg_addr,
-					      reg_size, reg_data);
-#endif /* CONFIG_RT_REGMAP */
-}
-static inline int mt6660_chip_power_on(struct snd_soc_codec *codec, int onoff)
-{
-	struct mt6660_chip *ri = snd_soc_codec_get_drvdata(codec);
-	int ret = 0;
-
-	dev_dbg(codec->dev, "%s: onoff = %d\n", __func__, onoff);
-	mutex_lock(&ri->var_lock);
-	if (onoff) {
-		if (ri->pwr_cnt++ == 0) {
-			ret = snd_soc_update_bits(codec,
-						  MT6660_REG_SYSTEM_CTRL,
-						  0x01, 0x00);
-			dev_info(ri->dev, "%s reg0x05 = 0x%x\n", __func__,
-				snd_soc_read(codec, MT6660_REG_IRQ_STATUS1));
-		}
-	} else {
-		if (--ri->pwr_cnt == 0) {
-			ret = snd_soc_update_bits(codec,
-						  MT6660_REG_SYSTEM_CTRL,
-						  0x01, 0xff);
-		}
-		if (ri->pwr_cnt < 0) {
-			dev_warn(ri->dev, "not paired on/off\n");
-			ri->pwr_cnt = 0;
-		}
-	}
-	mutex_unlock(&ri->var_lock);
-	return ret;
-}
-
-static int mt6660_codec_set_bias_level(struct snd_soc_codec *codec,
-	enum snd_soc_bias_level level)
-{
-	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(codec);
-	int ret = 0;
-
-	if (dapm->bias_level == level) {
-		dev_warn(codec->dev, "%s: repeat level change\n", __func__);
-		goto level_change_skip;
-	}
-	switch (level) {
-	case SND_SOC_BIAS_ON:
-	case SND_SOC_BIAS_PREPARE:
-		break;
-	case SND_SOC_BIAS_STANDBY:
-		if (dapm->bias_level != SND_SOC_BIAS_OFF)
-			break;
-		dev_dbg(codec->dev, "exit low power mode\n");
-		ret = mt6660_chip_power_on(codec, 1);
-		if (ret < 0)
-			dev_err(codec->dev, "power on fail\n");
-		break;
-	case SND_SOC_BIAS_OFF:
-		dev_dbg(codec->dev, "enter low power mode\n");
-		ret = mt6660_chip_power_on(codec, 0);
-		if (ret < 0)
-			dev_err(codec->dev, "power off fail\n");
-		dev_info(codec->dev, "%s reg0x05 = 0x%x\n", __func__,
-			snd_soc_read(codec, MT6660_REG_IRQ_STATUS1));
-		break;
-	default:
-		return -EINVAL;
-	}
-	dapm->bias_level = level;
-	dev_dbg(codec->dev, "c bias_level = %d\n", level);
-level_change_skip:
+	*val = reg_data;
 	return 0;
 }
 
-static int mt6660_codec_init_setting(struct snd_soc_codec *codec)
-{
-	const struct codec_reg_val *init_table;
-	int i, len, ret = 0;
-
-	init_table = e4_reg_inits;
-	len = ARRAY_SIZE(e4_reg_inits);
-
-	for (i = 0; i < len; i++) {
-		ret = snd_soc_update_bits(codec, init_table[i].addr,
-				init_table[i].mask, init_table[i].data);
-		if (ret < 0)
-			return ret;
-	}
-	return 0;
-}
-
-static int mt6660_codec_probe(struct snd_soc_codec *codec)
-{
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	int ret = 0;
-
-	dev_info(codec->dev, "%s++\n", __func__);
-	ret = mt6660_codec_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-	if (ret < 0) {
-		dev_err(codec->dev, "config bias standby fail\n");
-		return ret;
-	}
-	ret = mt6660_codec_init_setting(codec);
-	if (ret < 0) {
-		dev_err(codec->dev, "%s: write init setting fail\n", __func__);
-		return ret;
-	}
-	ret = mt6660_codec_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	if (ret < 0) {
-		dev_err(codec->dev, "config bias off fail\n");
-		return ret;
-	}
-	chip->codec = codec;
-
-	chip->spm.max_pwr = 5100;
-	chip->spm.min_pwr = 4000;
-	ret = richtek_spm_classdev_register(codec->dev, &chip->spm);
-	if (ret < 0) {
-		dev_err(codec->dev, "spm class register faled\n");
-		return ret;
-	}
-
-	dev_info(codec->dev, "%s--\n", __func__);
-	return 0;
-}
-
-static int mt6660_codec_remove(struct snd_soc_codec *codec)
-{
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-
-	dev_dbg(codec->dev, "%s++\n", __func__);
-	chip->codec = NULL;
-	richtek_spm_classdev_unregister(&chip->spm);
-	dev_dbg(codec->dev, "%s--\n", __func__);
-	return 0;
-}
+static const struct regmap_config mt6660_regmap_config = {
+	.reg_bits = 8,
+	.val_bits = 32,
+	.reg_write = mt6660_reg_write,
+	.reg_read = mt6660_reg_read,
+};
 
 static int mt6660_codec_dac_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	switch (event) {
-	case SND_SOC_DAPM_POST_PMU:
+	if (event == SND_SOC_DAPM_POST_PMU)
 		usleep_range(1000, 1100);
-		break;
-	}
 	return 0;
 }
 
 static int mt6660_codec_classd_event(struct snd_soc_dapm_widget *w,
 	struct snd_kcontrol *kcontrol, int event)
 {
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	int ret = 0;
+	struct snd_soc_component *component =
+		snd_soc_dapm_to_component(w->dapm);
+	int ret;
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		dev_dbg(codec->dev, "%s: before classd turn on\n", __func__);
+		dev_dbg(component->dev,
+			"%s: before classd turn on\n", __func__);
 		/* config to adaptive mode */
-		ret = snd_soc_update_bits(codec,
-					  MT6660_REG_BST_CTRL, 0x03, 0x03);
+		ret = snd_soc_component_update_bits(component,
+			MT6660_REG_BST_CTRL, 0x03, 0x03);
 		if (ret < 0) {
-			dev_err(codec->dev, "config mode adaptive fail\n");
+			dev_err(component->dev, "config mode adaptive fail\n");
 			return ret;
 		}
 		break;
 	case SND_SOC_DAPM_POST_PMU:
 		/* voltage sensing enable */
-		ret = snd_soc_update_bits(codec, MT6660_REG_RESV7, 0x04, 0x04);
+		ret = snd_soc_component_update_bits(component,
+			MT6660_REG_RESV7, 0x04, 0x04);
 		if (ret < 0) {
-			dev_err(codec->dev, "enable voltage sensing fail\n");
+			dev_err(component->dev,
+				"enable voltage sensing fail\n");
 			return ret;
 		}
-		dev_info(codec->dev, "mt6660 amp on\n");
+		dev_dbg(component->dev, "Amp on\n");
 		break;
 	case SND_SOC_DAPM_PRE_PMD:
-		dev_info(codec->dev, "mt6660 amp off\n");
-		ret = richtek_spm_classdev_trigger_ampoff(&chip->spm);
-		if (ret < 0)
-			dev_err(codec->dev, "spm ampoff faled\n");
+		dev_dbg(component->dev, "Amp off\n");
 		/* voltage sensing disable */
-		ret = snd_soc_update_bits(codec, MT6660_REG_RESV7, 0x04, 0x00);
+		ret = snd_soc_component_update_bits(component,
+			MT6660_REG_RESV7, 0x04, 0x00);
 		if (ret < 0) {
-			dev_err(codec->dev, "disable voltage sensing fail\n");
+			dev_err(component->dev,
+				"disable voltage sensing fail\n");
 			return ret;
 		}
 		/* pop-noise improvement 1 */
-		ret = snd_soc_update_bits(codec, MT6660_REG_RESV10, 0x10, 0x10);
+		ret = snd_soc_component_update_bits(component,
+			MT6660_REG_RESV10, 0x10, 0x10);
 		if (ret < 0) {
-			dev_err(codec->dev, "pop-noise improvement 1 fail\n");
+			dev_err(component->dev,
+				"pop-noise improvement 1 fail\n");
 			return ret;
 		}
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		dev_dbg(codec->dev, "%s: after classd turn off\n", __func__);
+		dev_dbg(component->dev,
+			"%s: after classd turn off\n", __func__);
 		/* pop-noise improvement 2 */
-		ret = snd_soc_update_bits(codec, MT6660_REG_RESV10, 0x10, 0x00);
+		ret = snd_soc_component_update_bits(component,
+			MT6660_REG_RESV10, 0x10, 0x00);
 		if (ret < 0) {
-			dev_err(codec->dev, "pop-noise improvement 2 fail\n");
+			dev_err(component->dev,
+				"pop-noise improvement 2 fail\n");
 			return ret;
 		}
 		/* config to off mode */
-		ret = snd_soc_update_bits(codec,
-					  MT6660_REG_BST_CTRL, 0x03, 0x00);
+		ret = snd_soc_component_update_bits(component,
+			MT6660_REG_BST_CTRL, 0x03, 0x00);
 		if (ret < 0) {
-			dev_err(codec->dev, "config mode off fail\n");
+			dev_err(component->dev, "config mode off fail\n");
 			return ret;
 		}
 		break;
@@ -345,151 +161,178 @@ static int mt6660_codec_classd_event(struct snd_soc_dapm_widget *w,
 	return 0;
 }
 
-static const struct snd_soc_dapm_widget mt6660_codec_dapm_widgets[] = {
+static const struct snd_soc_dapm_widget mt6660_component_dapm_widgets[] = {
 	SND_SOC_DAPM_DAC_E("DAC", NULL, MT6660_REG_PLL_CFG1,
-			   0, 1, mt6660_codec_dac_event, SND_SOC_DAPM_POST_PMU),
+		0, 1, mt6660_codec_dac_event, SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_ADC("VI ADC", NULL, SND_SOC_NOPM, 0, 0),
 	SND_SOC_DAPM_PGA("PGA", SND_SOC_NOPM, 0, 0, NULL, 0),
 	SND_SOC_DAPM_OUT_DRV_E("ClassD", MT6660_REG_SYSTEM_CTRL, 2, 0,
 			       NULL, 0, mt6660_codec_classd_event,
 			       SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMU |
 			       SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_SPK("SPK", NULL),
+	SND_SOC_DAPM_OUTPUT("OUTP"),
+	SND_SOC_DAPM_OUTPUT("OUTN"),
 };
 
-static const struct snd_soc_dapm_route mt6660_codec_dapm_routes[] = {
-	{ "DAC", NULL, "aif_playback"},
-	{ "PGA", NULL, "DAC"},
-	{ "ClassD", NULL, "PGA"},
-	{ "SPK", NULL, "ClassD"},
-	{ "VI ADC", NULL, "ClassD"},
-	{ "aif_capture", NULL, "VI ADC"},
+static const struct snd_soc_dapm_route mt6660_component_dapm_routes[] = {
+	{ "DAC", NULL, "aif_playback" },
+	{ "PGA", NULL, "DAC" },
+	{ "ClassD", NULL, "PGA" },
+	{ "OUTP", NULL, "ClassD" },
+	{ "OUTN", NULL, "ClassD" },
+	{ "VI ADC", NULL, "ClassD" },
+	{ "aif_capture", NULL, "VI ADC" },
 };
 
-static int mt6660_codec_put_volsw(struct snd_kcontrol *kcontrol,
+static int mt6660_component_get_volsw(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *ucontrol)
 {
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	int ret, put_ret = 0;
+	struct snd_soc_component *component =
+		snd_soc_kcontrol_component(kcontrol);
+	struct mt6660_chip *chip = (struct mt6660_chip *)
+		snd_soc_component_get_drvdata(component);
 
-	ret = mt6660_chip_power_on(codec, 1);
-	if (ret < 0)
-		dev_err(codec->dev, "%s: pwr on fail\n", __func__);
-	put_ret = snd_soc_put_volsw(kcontrol, ucontrol);
-	if (ret < 0)
-		return ret;
-	ret = mt6660_chip_power_on(codec, 0);
-	if (ret < 0)
-		dev_err(codec->dev, "%s: pwr off fail\n", __func__);
-	return put_ret;
-}
-
-static int mt6660_codec_get_volsw(struct snd_kcontrol *kcontrol,
-				  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct mt6660_chip *chip = snd_soc_codec_get_drvdata(codec);
-	int ret = -EINVAL;
-
-	if (!strcmp(kcontrol->id.name, "Chip_Rev")) {
-		ucontrol->value.integer.value[0] = chip->chip_rev & 0x0f;
-		ret = 0;
-	}
-	return ret;
+	ucontrol->value.integer.value[0] = chip->chip_rev & 0x0f;
+	return 0;
 }
 
 static const DECLARE_TLV_DB_SCALE(vol_ctl_tlv, -1155, 5, 0);
 
-static const struct snd_kcontrol_new mt6660_codec_snd_controls[] = {
-	SOC_SINGLE_EXT_TLV("Volume_Ctrl", MT6660_REG_VOL_CTRL, 0, 255,
-			   1, snd_soc_get_volsw, mt6660_codec_put_volsw,
-			   vol_ctl_tlv),
-	SOC_SINGLE_EXT("WDT_Enable", MT6660_REG_WDT_CTRL, 7, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("Hard_Clip_Enable", MT6660_REG_HCLIP_CTRL, 8, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("Clip_Enable", MT6660_REG_SPS_CTRL, 0, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("BoostMode", MT6660_REG_BST_CTRL, 0, 3, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("DRE_Enable", MT6660_REG_DRE_CTRL, 0, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("DC_Protect_Enable", MT6660_REG_DC_PROTECT_CTRL, 3, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("I2SLRS", MT6660_REG_DATAO_SEL, 6, 3, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("I2SDOLS", MT6660_REG_DATAO_SEL, 3, 7, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("I2SDORS", MT6660_REG_DATAO_SEL, 0, 7, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	/* for debug purpose */
-	SOC_SINGLE_EXT("HPF_AUD_IN_EN", MT6660_REG_HPF_CTRL, 0, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("AUD_LOOP_BACK", MT6660_REG_PATH_BYPASS, 4, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("Mute_Enable", MT6660_REG_SYSTEM_CTRL, 1, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("CS_Comp_Disable", MT6660_REG_PATH_BYPASS, 2, 1, 0,
-		       snd_soc_get_volsw, mt6660_codec_put_volsw),
-	SOC_SINGLE_EXT("T0_SEL", MT6660_REG_CALI_T0, 0, 7, 0,
+static const struct snd_kcontrol_new mt6660_component_snd_controls[] = {
+	SOC_SINGLE_TLV("Digital Volume", MT6660_REG_VOL_CTRL, 0, 255,
+			   1, vol_ctl_tlv),
+	SOC_SINGLE("Hard Clip Switch", MT6660_REG_HCLIP_CTRL, 8, 1, 0),
+	SOC_SINGLE("Clip Switch", MT6660_REG_SPS_CTRL, 0, 1, 0),
+	SOC_SINGLE("Boost Mode", MT6660_REG_BST_CTRL, 0, 3, 0),
+	SOC_SINGLE("DRE Switch", MT6660_REG_DRE_CTRL, 0, 1, 0),
+	SOC_SINGLE("DC Protect Switch",	MT6660_REG_DC_PROTECT_CTRL, 3, 1, 0),
+	SOC_SINGLE("Data Output Left Channel Selection",
+		   MT6660_REG_DATAO_SEL, 3, 7, 0),
+	SOC_SINGLE("Data Output Right Channel Selection",
+		   MT6660_REG_DATAO_SEL, 0, 7, 0),
+	SOC_SINGLE_EXT("T0 SEL", MT6660_REG_CALI_T0, 0, 7, 0,
 		       snd_soc_get_volsw, NULL),
-	SOC_SINGLE_EXT("Chip_Rev", SND_SOC_NOPM, 0, 16, 0,
-		       mt6660_codec_get_volsw, NULL),
+	SOC_SINGLE_EXT("Chip Rev", MT6660_REG_DEVID, 8, 15, 0,
+		       mt6660_component_get_volsw, NULL),
 };
 
-static const struct snd_soc_codec_driver mt6660_codec_driver = {
-	.probe = mt6660_codec_probe,
-	.remove = mt6660_codec_remove,
-
-	.read = mt6660_codec_io_read,
-	.write = mt6660_codec_io_write,
-
-	.component_driver = {
-		.controls = mt6660_codec_snd_controls,
-		.num_controls = ARRAY_SIZE(mt6660_codec_snd_controls),
-		.dapm_widgets = mt6660_codec_dapm_widgets,
-		.num_dapm_widgets = ARRAY_SIZE(mt6660_codec_dapm_widgets),
-		.dapm_routes = mt6660_codec_dapm_routes,
-		.num_dapm_routes = ARRAY_SIZE(mt6660_codec_dapm_routes),
-	},
-
-	.set_bias_level = mt6660_codec_set_bias_level,
-	.idle_bias_off = true,
-};
-
-static int mt6660_codec_aif_startup(struct snd_pcm_substream *substream,
-	struct snd_soc_dai *dai)
+static int _mt6660_chip_power_on(struct mt6660_chip *chip, int on_off)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_codec_get_dapm(dai->codec);
+	return regmap_write_bits(chip->regmap, MT6660_REG_SYSTEM_CTRL,
+				 0x01, on_off ? 0x00 : 0x01);
+}
+
+struct reg_table {
+	uint32_t addr;
+	uint32_t mask;
+	uint32_t val;
+};
+
+static const struct reg_table mt6660_setting_table[] = {
+	{ 0x20, 0x80, 0x00 },
+	{ 0x30, 0x01, 0x00 },
+	{ 0x50, 0x1c, 0x04 },
+	{ 0xB1, 0x0c, 0x00 },
+	{ 0xD3, 0x03, 0x03 },
+	{ 0xE0, 0x01, 0x00 },
+	{ 0x98, 0x44, 0x04 },
+	{ 0xB9, 0xff, 0x82 },
+	{ 0xB7, 0x7777, 0x7273 },
+	{ 0xB6, 0x07, 0x03 },
+	{ 0x6B, 0xe0, 0x20 },
+	{ 0x07, 0xff, 0x70 },
+	{ 0xBB, 0xff, 0x20 },
+	{ 0x69, 0xff, 0x40 },
+	{ 0xBD, 0xffff, 0x17f8 },
+	{ 0x70, 0xff, 0x15 },
+	{ 0x7C, 0xff, 0x00 },
+	{ 0x46, 0xff, 0x1d },
+	{ 0x1A, 0xffffffff, 0x7fdb7ffe },
+	{ 0x1B, 0xffffffff, 0x7fdb7ffe },
+	{ 0x51, 0xff, 0x58 },
+	{ 0xA2, 0xff, 0xce },
+	{ 0x33, 0xffff, 0x7fff },
+	{ 0x4C, 0xffff, 0x0116 },
+	{ 0x16, 0x1800, 0x0800 },
+	{ 0x68, 0x1f, 0x07 },
+};
+
+static int mt6660_component_setting(struct snd_soc_component *component)
+{
+	struct mt6660_chip *chip = snd_soc_component_get_drvdata(component);
 	int ret = 0;
+	size_t i = 0;
 
-	dev_dbg(dai->dev, "%s\n", __func__);
-	if (dapm->bias_level == SND_SOC_BIAS_OFF)
-		ret = mt6660_codec_set_bias_level(dai->codec,
-						  SND_SOC_BIAS_STANDBY);
-	return ret;
-}
+	ret = _mt6660_chip_power_on(chip, 1);
+	if (ret < 0) {
+		dev_err(component->dev, "%s chip power on failed\n", __func__);
+		return ret;
+	}
 
-static void mt6660_codec_aif_shutdown(struct snd_pcm_substream *substream,
-	struct snd_soc_dai *dai)
-{
-	dev_dbg(dai->dev, "%s\n", __func__);
-}
+	for (i = 0; i < ARRAY_SIZE(mt6660_setting_table); i++) {
+		ret = snd_soc_component_update_bits(component,
+				mt6660_setting_table[i].addr,
+				mt6660_setting_table[i].mask,
+				mt6660_setting_table[i].val);
+		if (ret < 0) {
+			dev_err(component->dev, "%s update 0x%02x failed\n",
+				__func__, mt6660_setting_table[i].addr);
+			return ret;
+		}
+	}
 
-static int mt6660_codec_aif_prepare(struct snd_pcm_substream *substream,
-	struct snd_soc_dai *dai)
-{
-	dev_dbg(dai->dev, "%s\n", __func__);
+	ret = _mt6660_chip_power_on(chip, 0);
+	if (ret < 0) {
+		dev_err(component->dev, "%s chip power off failed\n", __func__);
+		return ret;
+	}
+
 	return 0;
 }
 
-static int mt6660_codec_aif_hw_params(struct snd_pcm_substream *substream,
+static int mt6660_component_probe(struct snd_soc_component *component)
+{
+	struct mt6660_chip *chip = snd_soc_component_get_drvdata(component);
+	int ret;
+
+	dev_dbg(component->dev, "%s\n", __func__);
+	snd_soc_component_init_regmap(component, chip->regmap);
+
+	ret = mt6660_component_setting(component);
+	if (ret < 0)
+		dev_err(chip->dev, "mt6660 component setting failed\n");
+
+	return ret;
+}
+
+static void mt6660_component_remove(struct snd_soc_component *component)
+{
+	dev_dbg(component->dev, "%s\n", __func__);
+	snd_soc_component_exit_regmap(component);
+}
+
+static const struct snd_soc_component_driver mt6660_component_driver = {
+	.probe = mt6660_component_probe,
+	.remove = mt6660_component_remove,
+
+	.controls = mt6660_component_snd_controls,
+	.num_controls = ARRAY_SIZE(mt6660_component_snd_controls),
+	.dapm_widgets = mt6660_component_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(mt6660_component_dapm_widgets),
+	.dapm_routes = mt6660_component_dapm_routes,
+	.num_dapm_routes = ARRAY_SIZE(mt6660_component_dapm_routes),
+
+	.idle_bias_on = false, /* idle_bias_off = true */
+	.endianness = 1,
+};
+
+static int mt6660_component_aif_hw_params(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *hw_params, struct snd_soc_dai *dai)
 {
 	int word_len = params_physical_width(hw_params);
 	int aud_bit = params_width(hw_params);
 	u16 reg_data = 0;
-	int ret = 0;
+	int ret;
 
 	dev_dbg(dai->dev, "%s: ++\n", __func__);
 	dev_dbg(dai->dev, "format: 0x%08x\n", params_format(hw_params));
@@ -516,14 +359,14 @@ static int mt6660_codec_aif_hw_params(struct snd_pcm_substream *substream,
 	default:
 		return -ENOTSUPP;
 	}
-	ret = snd_soc_update_bits(dai->codec,
-				  MT6660_REG_SERIAL_CFG1, 0xc0, reg_data << 6);
+	ret = snd_soc_component_update_bits(dai->component,
+		MT6660_REG_SERIAL_CFG1, 0xc0, (reg_data << 6));
 	if (ret < 0) {
 		dev_err(dai->dev, "config aud bit fail\n");
 		return ret;
 	}
-	ret = snd_soc_update_bits(dai->codec,
-				  MT6660_REG_TDM_CFG3, 0x3f0, word_len << 4);
+	ret = snd_soc_component_update_bits(dai->component,
+		MT6660_REG_TDM_CFG3, 0x3f0, word_len << 4);
 	if (ret < 0) {
 		dev_err(dai->dev, "config word len fail\n");
 		return ret;
@@ -532,22 +375,8 @@ static int mt6660_codec_aif_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static int mt6660_codec_aif_trigger(struct snd_pcm_substream *substream,
-	int cmd, struct snd_soc_dai *dai)
-{
-	int capture = (substream->stream == SNDRV_PCM_STREAM_CAPTURE);
-
-	dev_dbg(dai->dev, "%s: cmd = %d\n", __func__, cmd);
-	dev_dbg(dai->dev, "%s: %c\n", __func__, capture ? 'c' : 'p');
-	return 0;
-}
-
-static const struct snd_soc_dai_ops mt6660_codec_aif_ops = {
-	.startup = mt6660_codec_aif_startup,
-	.shutdown = mt6660_codec_aif_shutdown,
-	.prepare = mt6660_codec_aif_prepare,
-	.hw_params = mt6660_codec_aif_hw_params,
-	.trigger = mt6660_codec_aif_trigger,
+static const struct snd_soc_dai_ops mt6660_component_aif_ops = {
+	.hw_params = mt6660_component_aif_hw_params,
 };
 
 #define STUB_RATES	SNDRV_PCM_RATE_8000_192000
@@ -575,98 +404,81 @@ static struct snd_soc_dai_driver mt6660_codec_dai = {
 		.formats = STUB_FORMATS,
 	},
 	/* dai properties */
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 	.symmetric_channels = 1,
-	.symmetric_samplebits = 1,
+	.symmetric_sample_bits = 1,
 	/* dai operations */
-	.ops = &mt6660_codec_aif_ops,
+	.ops = &mt6660_component_aif_ops,
 };
 
-static inline int mt6660_chip_id_check(struct i2c_client *i2c)
+static int _mt6660_chip_id_check(struct mt6660_chip *chip)
 {
-	u8 reg_addr = MT6660_GET_ADDR(MT6660_REG_DEVID);
-	u8 id[2] = {0};
-	int ret = 0;
+	int ret;
+	unsigned int val;
 
-	i2c_smbus_write_byte_data(i2c, 0x03, 0x00);
-	ret = i2c_smbus_read_i2c_block_data(i2c, reg_addr, 2, id);
+	ret = regmap_read(chip->regmap, MT6660_REG_DEVID, &val);
 	if (ret < 0)
 		return ret;
-	ret = (id[0] << 8) + id[1];
-	ret &= 0x0ff0;
-	if (ret != 0x00e0 && ret != 0x01e0)
+	val &= 0x0ff0;
+	if (val != 0x00e0 && val != 0x01e0) {
+		dev_err(chip->dev, "%s id(%x) not match\n", __func__, val);
 		return -ENODEV;
-	i2c_smbus_write_byte_data(i2c, 0x03, 0x01);
+	}
 	return 0;
 }
 
-static inline int _mt6660_chip_sw_reset(struct mt6660_chip *chip)
+static int _mt6660_chip_sw_reset(struct mt6660_chip *chip)
 {
-	u8 reg_addr = MT6660_GET_ADDR(MT6660_REG_SYSTEM_CTRL);
+	int ret;
 
-	i2c_smbus_write_byte_data(chip->i2c, reg_addr, 0x80);
+	/* turn on main pll first, then trigger reset */
+	ret = regmap_write(chip->regmap, MT6660_REG_SYSTEM_CTRL, 0x00);
+	if (ret < 0)
+		return ret;
+	ret = regmap_write(chip->regmap, MT6660_REG_SYSTEM_CTRL, 0x80);
+	if (ret < 0)
+		return ret;
 	msleep(30);
 	return 0;
 }
 
-static inline int _mt6660_chip_power_on(struct mt6660_chip *chip, int onoff)
+static int _mt6660_read_chip_revision(struct mt6660_chip *chip)
 {
-	u8 reg_addr = MT6660_GET_ADDR(MT6660_REG_SYSTEM_CTRL), reg_data = 0;
-	int ret = 0;
+	int ret;
+	unsigned int val;
 
-	ret = i2c_smbus_read_byte_data(chip->i2c, reg_addr);
-	if (ret < 0)
-		return ret;
-	reg_data = (u8)ret;
-	if (onoff)
-		reg_data &= (~0x01);
-	else
-		reg_data |= 0x01;
-	return i2c_smbus_write_byte_data(chip->i2c, reg_addr, reg_data);
-}
-
-static inline int _mt6660_read_chip_revision(struct mt6660_chip *chip)
-{
-	u8 reg_addr = MT6660_GET_ADDR(MT6660_REG_DEVID);
-	u8 reg_data[2] = {0};
-	int ret = 0;
-
-	ret = i2c_smbus_read_i2c_block_data(chip->i2c, reg_addr, 2, reg_data);
+	ret = regmap_read(chip->regmap, MT6660_REG_DEVID, &val);
 	if (ret < 0) {
 		dev_err(chip->dev, "get chip revision fail\n");
 		return ret;
 	}
-	chip->chip_rev = reg_data[1];
+	chip->chip_rev = val&0xff;
+	dev_info(chip->dev, "%s chip_rev = %x\n", __func__, chip->chip_rev);
 	return 0;
 }
 
-int mt6660_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id)
+static int mt6660_i2c_probe(struct i2c_client *client)
 {
 	struct mt6660_chip *chip = NULL;
-	static int dev_cnt;
-	int ret = 0;
+	int ret;
 
-	dev_info(&client->dev, "%s++\n", __func__);
-	ret = mt6660_chip_id_check(client);
-	if (ret < 0) {
-		dev_err(&client->dev, "chip id check fail\n");
-		return ret;
-	}
+	dev_dbg(&client->dev, "%s\n", __func__);
 	chip = devm_kzalloc(&client->dev, sizeof(*chip), GFP_KERNEL);
 	if (!chip)
 		return -ENOMEM;
 	chip->i2c = client;
 	chip->dev = &client->dev;
-	chip->dev_cnt = dev_cnt++;
-	mutex_init(&chip->var_lock);
+	mutex_init(&chip->io_lock);
 	i2c_set_clientdata(client, chip);
 
-	/* chip power on */
-	ret = _mt6660_chip_power_on(chip, 1);
-	if (ret < 0) {
-		dev_err(chip->dev, "chip power on 1 fail\n");
-		goto probe_fail;
+	chip->regmap = devm_regmap_init(&client->dev,
+		NULL, chip, &mt6660_regmap_config);
+	if (IS_ERR(chip->regmap)) {
+		ret = PTR_ERR(chip->regmap);
+		dev_err(&client->dev, "failed to initialise regmap: %d\n", ret);
+		return ret;
 	}
+
 	/* chip reset first */
 	ret = _mt6660_chip_sw_reset(chip);
 	if (ret < 0) {
@@ -679,74 +491,92 @@ int mt6660_i2c_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		dev_err(chip->dev, "chip power on 2 fail\n");
 		goto probe_fail;
 	}
+	/* chip devid check */
+	ret = _mt6660_chip_id_check(chip);
+	if (ret < 0) {
+		dev_err(chip->dev, "chip id check fail\n");
+		goto probe_fail;
+	}
+	/* chip revision get */
 	ret = _mt6660_read_chip_revision(chip);
 	if (ret < 0) {
 		dev_err(chip->dev, "read chip revision fail\n");
 		goto probe_fail;
 	}
-	ret = _mt6660_chip_power_on(chip, 0);
-	if (ret < 0) {
-		dev_err(chip->dev, "chip power off fail\n");
-		goto probe_fail;
-	}
-	ret = mt6660_regmap_register(chip);
-	if (ret < 0) {
-		dev_err(chip->dev, "regmap register fail\n");
-		goto probe_fail;
-	}
-	dev_set_name(chip->dev, "MT6660_MT_%d", chip->dev_cnt);
-	dev_info(chip->dev, "%s--\n", __func__);
-	return snd_soc_register_codec(chip->dev, &mt6660_codec_driver,
-				      &mt6660_codec_dai, 1);
+	pm_runtime_set_active(chip->dev);
+	pm_runtime_enable(chip->dev);
+
+	ret = devm_snd_soc_register_component(chip->dev,
+					       &mt6660_component_driver,
+					       &mt6660_codec_dai, 1);
+	if (ret)
+		pm_runtime_disable(chip->dev);
+
+	return ret;
+
 probe_fail:
-	mutex_destroy(&chip->var_lock);
+	_mt6660_chip_power_on(chip, 0);
+	mutex_destroy(&chip->io_lock);
 	return ret;
 }
-EXPORT_SYMBOL(mt6660_i2c_probe);
 
-int mt6660_i2c_remove(struct i2c_client *client)
+static void mt6660_i2c_remove(struct i2c_client *client)
 {
 	struct mt6660_chip *chip = i2c_get_clientdata(client);
 
-	dev_dbg(chip->dev, "%s++\n", __func__);
-	snd_soc_unregister_codec(chip->dev);
-	mt6660_regmap_unregister(chip);
-	mutex_destroy(&chip->var_lock);
-	dev_dbg(chip->dev, "%s--\n", __func__);
-	return 0;
+	pm_runtime_disable(chip->dev);
+	pm_runtime_set_suspended(chip->dev);
+	mutex_destroy(&chip->io_lock);
 }
-EXPORT_SYMBOL(mt6660_i2c_remove);
 
-static int __init mt6660_driver_init(void)
+static int __maybe_unused mt6660_i2c_runtime_suspend(struct device *dev)
 {
-	pr_info("%s\n", __func__);
-	return 0;
-}
-module_init(mt6660_driver_init);
+	struct mt6660_chip *chip = dev_get_drvdata(dev);
 
-static void __exit mt6660_driver_exit(void)
+	dev_dbg(dev, "enter low power mode\n");
+	return regmap_update_bits(chip->regmap,
+		MT6660_REG_SYSTEM_CTRL, 0x01, 0x01);
+}
+
+static int __maybe_unused mt6660_i2c_runtime_resume(struct device *dev)
 {
-	pr_info("%s\n", __func__);
-}
-module_exit(mt6660_driver_exit);
+	struct mt6660_chip *chip = dev_get_drvdata(dev);
 
-MODULE_AUTHOR("CY_Huang <cy_huang@richtek.com>");
+	dev_dbg(dev, "exit low power mode\n");
+	return regmap_update_bits(chip->regmap,
+		MT6660_REG_SYSTEM_CTRL, 0x01, 0x00);
+}
+
+static const struct dev_pm_ops mt6660_dev_pm_ops = {
+	SET_RUNTIME_PM_OPS(mt6660_i2c_runtime_suspend,
+			   mt6660_i2c_runtime_resume, NULL)
+};
+
+static const struct of_device_id __maybe_unused mt6660_of_id[] = {
+	{ .compatible = "mediatek,mt6660",},
+	{},
+};
+MODULE_DEVICE_TABLE(of, mt6660_of_id);
+
+static const struct i2c_device_id mt6660_i2c_id[] = {
+	{"mt6660", 0 },
+	{},
+};
+MODULE_DEVICE_TABLE(i2c, mt6660_i2c_id);
+
+static struct i2c_driver mt6660_i2c_driver = {
+	.driver = {
+		.name = "mt6660",
+		.of_match_table = of_match_ptr(mt6660_of_id),
+		.pm = &mt6660_dev_pm_ops,
+	},
+	.probe_new = mt6660_i2c_probe,
+	.remove = mt6660_i2c_remove,
+	.id_table = mt6660_i2c_id,
+};
+module_i2c_driver(mt6660_i2c_driver);
+
+MODULE_AUTHOR("Jeff Chang <jeff_chang@richtek.com>");
 MODULE_DESCRIPTION("MT6660 SPKAMP Driver");
 MODULE_LICENSE("GPL");
-MODULE_VERSION("1.0.5_G");
-
-/*
- * Driver Version
- *
- * 1.0.1_G
- *	fix _mt6660_chip_power_on Issue
- * 1.0.2_G
- *	add VI ADC for aif_capture
- * 1.0.3_G
- *	clear irq when BIAS OFF
- * 1.0.4_G
- *	update id check function and init setting
- * 1.0.5_G
- *	remove old init setting table
- *	add big data function, use richtek_spm_cls
- */
+MODULE_VERSION("1.0.8_G");

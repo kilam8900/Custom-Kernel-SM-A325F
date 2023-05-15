@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *	Support for the asynchronous serial interface (DUART) included
  *	in the BCM1250 and derived System-On-a-Chip (SOC) devices.
@@ -9,19 +10,10 @@
  *
  *	Copyright (c) 2000, 2001, 2002, 2003, 2004  Broadcom Corporation
  *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License
- *	as published by the Free Software Foundation; either version
- *	2 of the License, or (at your option) any later version.
- *
  *	References:
  *
  *	"BCM1250/BCM1125/BCM1125H User Manual", Broadcom Corporation
  */
-
-#if defined(CONFIG_SERIAL_SB1250_DUART_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-#define SUPPORT_SYSRQ
-#endif
 
 #include <linux/compiler.h>
 #include <linux/console.h>
@@ -42,8 +34,7 @@
 #include <linux/types.h>
 
 #include <linux/refcount.h>
-#include <asm/io.h>
-#include <asm/war.h>
+#include <linux/io.h>
 
 #include <asm/sibyte/sb1250.h>
 #include <asm/sibyte/sb1250_uart.h>
@@ -165,7 +156,7 @@ static unsigned char read_sbdchn(struct sbd_port *sport, int reg)
 	unsigned char retval;
 
 	retval = __read_sbdchn(sport, reg);
-	if (SIBYTE_1956_WAR)
+	if (IS_ENABLED(CONFIG_SB1_PASS_2_WORKAROUNDS))
 		__war_sbd1956(sport);
 	return retval;
 }
@@ -175,7 +166,7 @@ static unsigned char read_sbdshr(struct sbd_port *sport, int reg)
 	unsigned char retval;
 
 	retval = __read_sbdshr(sport, reg);
-	if (SIBYTE_1956_WAR)
+	if (IS_ENABLED(CONFIG_SB1_PASS_2_WORKAROUNDS))
 		__war_sbd1956(sport);
 	return retval;
 }
@@ -183,14 +174,14 @@ static unsigned char read_sbdshr(struct sbd_port *sport, int reg)
 static void write_sbdchn(struct sbd_port *sport, int reg, unsigned int value)
 {
 	__write_sbdchn(sport, reg, value);
-	if (SIBYTE_1956_WAR)
+	if (IS_ENABLED(CONFIG_SB1_PASS_2_WORKAROUNDS))
 		__war_sbd1956(sport);
 }
 
 static void write_sbdshr(struct sbd_port *sport, int reg, unsigned int value)
 {
 	__write_sbdshr(sport, reg, value);
-	if (SIBYTE_1956_WAR)
+	if (IS_ENABLED(CONFIG_SB1_PASS_2_WORKAROUNDS))
 		__war_sbd1956(sport);
 }
 
@@ -408,8 +399,7 @@ static void sbd_transmit_chars(struct sbd_port *sport)
 	/* Send char.  */
 	if (!stop_tx) {
 		write_sbdchn(sport, R_DUART_TX_HOLD, xmit->buf[xmit->tail]);
-		xmit->tail = (xmit->tail + 1) & (UART_XMIT_SIZE - 1);
-		sport->port.icount.tx++;
+		uart_xmit_advance(&sport->port, 1);
 
 		if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
 			uart_write_wakeup(&sport->port);
@@ -540,7 +530,7 @@ static void sbd_init_port(struct sbd_port *sport)
 }
 
 static void sbd_set_termios(struct uart_port *uport, struct ktermios *termios,
-			    struct ktermios *old_termios)
+			    const struct ktermios *old_termios)
 {
 	struct sbd_port *sport = to_sport(uport);
 	unsigned int mode1 = 0, mode2 = 0, aux = 0;
@@ -672,7 +662,7 @@ static int sbd_map_port(struct uart_port *uport)
 	struct sbd_duart *duart = sport->duart;
 
 	if (!uport->membase)
-		uport->membase = ioremap_nocache(uport->mapbase,
+		uport->membase = ioremap(uport->mapbase,
 						 DUART_CHANREG_SPACING);
 	if (!uport->membase) {
 		printk(err);
@@ -680,7 +670,7 @@ static int sbd_map_port(struct uart_port *uport)
 	}
 
 	if (!sport->memctrl)
-		sport->memctrl = ioremap_nocache(duart->mapctrl,
+		sport->memctrl = ioremap(duart->mapctrl,
 						 DUART_CHANREG_SPACING);
 	if (!sport->memctrl) {
 		printk(err);
@@ -817,6 +807,7 @@ static void __init sbd_probe_duarts(void)
 			uport->ops	= &sbd_ops;
 			uport->line	= line;
 			uport->mapbase	= SBD_CHANREGS(line);
+			uport->has_sysrq = IS_ENABLED(CONFIG_SERIAL_SB1250_DUART_CONSOLE);
 		}
 	}
 }
@@ -828,7 +819,7 @@ static void __init sbd_probe_duarts(void)
  * console output.  The console_lock is held by the caller, so we
  * shouldn't be interrupted for more console activity.
  */
-static void sbd_console_putchar(struct uart_port *uport, int ch)
+static void sbd_console_putchar(struct uart_port *uport, unsigned char ch)
 {
 	struct sbd_port *sport = to_sport(uport);
 

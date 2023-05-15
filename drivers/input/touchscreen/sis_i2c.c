@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Touch Screen driver for SiS 9200 family I2C Touch panels
  *
  * Copyright (C) 2015 SiS, Inc.
  * Copyright (C) 2016 Nextfour Group
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/crc-itu-t.h>
@@ -304,8 +296,7 @@ static void sis_ts_reset(struct sis_ts_data *ts)
 	}
 }
 
-static int sis_ts_probe(struct i2c_client *client,
-			const struct i2c_device_id *id)
+static int sis_ts_probe(struct i2c_client *client)
 {
 	struct sis_ts_data *ts;
 	struct input_dev *input;
@@ -402,7 +393,7 @@ static struct i2c_driver sis_ts_driver = {
 		.name	= SIS_I2C_NAME,
 		.of_match_table = of_match_ptr(sis_ts_dt_ids),
 	},
-	.probe		= sis_ts_probe,
+	.probe_new	= sis_ts_probe,
 	.id_table	= sis_ts_id,
 };
 module_i2c_driver(sis_ts_driver);
